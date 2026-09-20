@@ -15,7 +15,11 @@
  *   AGY_ACP_MODEL / AGY_ACP_EFFORT / AGY_ACP_MODE / AGY_ACP_AGENT
  *   AGY_ACP_SANDBOX=1 / AGY_ACP_JSON_SCHEMA
  *   AGY_ACP_KEEP_STAGING=1 — keep .agy-acp-staging files for debug
+ *   AGY_ACP_STORE / AGY_ACP_SESSION_STORE — session index JSON path
+ *     (default ~/.agy-acp-map/sessions.json)
+ *   AGY_ACP_DELETE_ON_CLOSE=1 — also delete disk row on session/close
  */
+
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
@@ -52,18 +56,24 @@ import {
 } from './lib/agy-args.ts';
 import { discoverAgyCatalog } from './lib/agy-discovery.ts';
 import { AgyProcessManager } from './lib/agy-process.ts';
+import {
+  SessionStore,
+  sessionToRecord,
+  recordLaunchFields,
+  deleteOnCloseEnabled,
+} from './lib/session-store.ts';
 
 const AGENT_INFO = {
   name: 'agy-acp',
   title: 'agy ACP (stream-json)',
-  version: '0.1.1',
+  version: '0.1.2',
 };
 
 const BRIDGE_CAPABILITIES = {
   prompt: true,
   streaming: true,
   tools: true,
-  // conversationId persisted; respawn passes --conversation <id>
+  // Disk SessionStore maps ACP sessionId ↔ agy conversationId; respawn passes --conversation
   resume: true,
   // No interactive ACP permission UI — launch-time safety tiers only
   permissionRoundTrip: false,
@@ -71,7 +81,8 @@ const BRIDGE_CAPABILITIES = {
   safetyTiers: [...SAFETY_TIERS],
   nativeCancel: false,
   cancelMode: 'SIGINT_then_KILL',
-  historyReplay: 'adapter', // gateway must own transcript
+  // Lightweight id/config store only — Client owns transcript; no session/update replay
+  historyReplay: false,
   // Config at session/new; idle session/set_config_option updates fields → next prompt respawns
   dynamicConfig: 'restart',
   richContentInput: 'degrade_to_files', // images/resources → files + text refs
@@ -94,6 +105,91 @@ function sessionSkipsPermissions(session: Session) {
  * @type {Map<string, Session>}
  */
 const sessions = new Map();
+
+/** Disk session index (id mapping + launch snapshot). Not a transcript store. */
+const sessionStore = new SessionStore();
+
+function persistSession(session: Session) {
+  try {
+    sessionStore.upsert(sessionToRecord(session));
+  } catch (err: unknown) {
+    process.stderr.write(
+      `[agy-acp] session store upsert failed: ${(err as Error)?.message || err}\n`,
+    );
+  }
+}
+
+/** Rehydrate a Session from disk record into memory (no agy child yet). */
+function rehydrateSessionFromRecord(
+  record: import('./lib/session-store.ts').SessionRecord,
+): Session {
+  const seed = recordLaunchFields(record);
+  const richRoots = richRootsFromSession({
+    cwd: seed.cwd,
+    additionalDirectories: seed.additionalDirectories,
+  });
+  const mapper = createMapperState(richRoots);
+  if (seed.conversationId) mapper.conversationId = seed.conversationId;
+  const session: Session = {
+    sessionId: seed.sessionId,
+    cwd: seed.cwd,
+    additionalDirectories: seed.additionalDirectories,
+    createdAt: seed.createdAt,
+    updatedAt: seed.updatedAt,
+    title: seed.title,
+    proc: new AgyProcessManager(),
+    mapper,
+    busy: false,
+    cancelled: false,
+    protocolVersion: 2,
+    stderrBuf: '',
+    softDenies: [],
+    softDenyEmitted: false,
+    stagedFiles: [],
+    conversationId: seed.conversationId,
+    model: seed.model,
+    effort: seed.effort,
+    mode: seed.mode,
+    agent: seed.agent,
+    sandbox: seed.sandbox,
+    jsonSchema: seed.jsonSchema,
+    safety: seed.safety,
+    disableSlashCommands: seed.disableSlashCommands,
+    printTimeout: seed.printTimeout,
+  };
+  sessions.set(session.sessionId, session);
+  return session;
+}
+
+function acpSessionShape(s: {
+  sessionId: string;
+  cwd: string;
+  title?: string;
+  updatedAt: string;
+  additionalDirectories?: string[];
+  conversationId?: string;
+  model?: string;
+  effort?: string;
+  mode?: string;
+  agent?: string;
+  sandbox?: boolean;
+  jsonSchema?: string;
+  safety?: string;
+  printTimeout?: string;
+  disableSlashCommands?: boolean;
+}) {
+  const meta = sessionMeta(s as Session);
+  return {
+    sessionId: s.sessionId,
+    cwd: s.cwd,
+    title: s.title,
+    updatedAt: s.updatedAt,
+    ...(s.additionalDirectories?.length
+      ? { additionalDirectories: s.additionalDirectories }
+      : {}),
+    ...(meta ? { _meta: meta } : {}),
+  };
+}
 
 /**
  * @typedef {{
@@ -156,11 +252,13 @@ function ensurePath() {
   }
 }
 
-/** Sync session.conversationId from mapper when learned. */
+/** Sync session.conversationId from mapper when learned; upsert disk store. */
 function syncConversationId(session: Session) {
   const id = session.mapper?.conversationId;
   if (id && id !== session.conversationId) {
     session.conversationId = id;
+    session.updatedAt = new Date().toISOString();
+    persistSession(session);
   }
 }
 
@@ -374,6 +472,7 @@ function onAgyEvent(session: Session, obj: unknown) {
     session.busy = false;
     session.cancelled = false;
     session.updatedAt = new Date().toISOString();
+    persistSession(session);
     cleanupTurnStaging(session);
   }
 }
@@ -447,13 +546,17 @@ async function handleInitialize(id: unknown, params: Record<string, unknown> | u
         ...(discovery.modelsError ? [`models: ${discovery.modelsError}`] : []),
         ...(discovery.agentsError ? [`agents: ${discovery.agentsError}`] : []),
       ],
-      resumeNote: 'respawn passes --conversation <id> when conversationId known',
+      resumeNote:
+        'session/resume rehydrates from disk SessionStore when needed; next prompt respawns with --conversation <id> + saved flags. No history replay via session/update.',
+      sessionStoreNote:
+        'Lightweight disk index (~/.agy-acp-map/sessions.json or AGY_ACP_STORE): sessionId↔conversationId + launch snapshot only. Transcript owned by Client.',
+      historyReplayNote: 'historyReplay: false — bridge never replays transcripts',
       dynamicConfigNote:
         'config at session/new; idle session/set_config_option → kill child; next prompt respawns with new flags + --conversation',
       safetyNote:
         'Three launch tiers (no ACP permission UI): safe (default, soft-deny); autonomous (skip-permissions + default --sandbox); autonomous-unsandboxed (skip-permissions, never --sandbox). AGY_ACP_SKIP_PERMISSIONS=1≈autonomous if safety unset. Explicit sandbox overrides except unsandboxed.',
       engineeringNote:
-        '0.1.1: three-tier safety (safe / autonomous / autonomous-unsandboxed) via resolveSafety',
+        '0.1.2: disk SessionStore + session/list merge + session/resume rehydrate; historyReplay false',
     },
   };
   if (protocolVersion === 2) {
@@ -536,6 +639,7 @@ function handleSessionNew(id: unknown, params: Record<string, unknown> | undefin
     printTimeout: launch.printTimeout,
   };
   sessions.set(sessionId, session);
+  persistSession(session);
   const meta = sessionMeta(session);
   reply(id, {
     sessionId,
@@ -544,25 +648,20 @@ function handleSessionNew(id: unknown, params: Record<string, unknown> | undefin
 }
 
 function handleSessionList(id: unknown, params: Record<string, unknown> | undefined) {
-  const filterCwd = params?.cwd;
-  let list = [...sessions.values()];
-  if (filterCwd) list = list.filter((s) => s.cwd === filterCwd);
-  reply(id, {
-    sessions: list.map((s) => {
-      const meta = sessionMeta(s);
-      return {
-        sessionId: s.sessionId,
-        cwd: s.cwd,
-        title: s.title,
-        updatedAt: s.updatedAt,
-        ...(s.additionalDirectories?.length
-          ? { additionalDirectories: s.additionalDirectories }
-          : {}),
-        ...(s.conversationId ? { conversationId: s.conversationId } : {}),
-        ...(meta ? { _meta: meta } : {}),
-      };
-    }),
-  });
+  const filterCwd = typeof params?.cwd === 'string' ? params.cwd : undefined;
+  /** Prefer in-memory when both memory and disk have the same sessionId. */
+  const byId = new Map<string, ReturnType<typeof acpSessionShape>>();
+  for (const r of sessionStore.list(filterCwd ? { cwd: filterCwd } : undefined)) {
+    byId.set(r.sessionId, acpSessionShape(r));
+  }
+  for (const s of sessions.values()) {
+    if (filterCwd && s.cwd !== filterCwd) continue;
+    byId.set(s.sessionId, acpSessionShape(s));
+  }
+  const list = [...byId.values()].sort((a, b) =>
+    String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')),
+  );
+  reply(id, { sessions: list });
 }
 
 async function handleSessionClose(id: unknown, params: Record<string, unknown> | undefined) {
@@ -572,24 +671,50 @@ async function handleSessionClose(id: unknown, params: Record<string, unknown> |
     replyError(id, -32001, `unknown sessionId: ${sessionId}`);
     return;
   }
+  // Final upsert so disk has latest title/conversationId before dropping memory
+  session.updatedAt = new Date().toISOString();
+  persistSession(session);
   await killSessionChild(session);
   cleanupSessionStaging(session.cwd);
   sessions.delete(sessionId as string);
+  // Keep disk record by default so resume after close/restart works
+  if (deleteOnCloseEnabled()) {
+    try {
+      sessionStore.delete(sessionId as string);
+    } catch (err: unknown) {
+      process.stderr.write(
+        `[agy-acp] session store delete failed: ${(err as Error)?.message || err}\n`,
+      );
+    }
+  }
   reply(id, {});
 }
 
 function handleSessionResume(id: unknown, params: Record<string, unknown> | undefined) {
   const sessionId = params?.sessionId as string | undefined;
-  const session = sessions.get(sessionId as string);
-  if (!session) {
-    replyError(id, -32001, `unknown sessionId: ${sessionId}`);
+  if (!sessionId || typeof sessionId !== 'string') {
+    replyError(id, -32602, 'sessionId required');
     return;
+  }
+  let session = sessions.get(sessionId);
+  if (!session) {
+    const record = sessionStore.get(sessionId);
+    if (!record) {
+      replyError(id, -32001, `unknown sessionId: ${sessionId}`);
+      return;
+    }
+    // Rehydrate into memory only — no agy child, no history replay via session/update
+    session = rehydrateSessionFromRecord(record);
+    process.stderr.write(
+      `[agy-acp] session/resume rehydrated from store sessionId=${sessionId}` +
+        `${record.conversationId ? ` conversation=${record.conversationId}` : ''} (no history replay)\n`,
+    );
   }
   if (params?.cwd && params.cwd !== session.cwd) {
-    replyError(id, -32602, 'cwd mismatch on resume (v0.3 does not relocate sessions)');
+    replyError(id, -32602, 'cwd mismatch on resume (bridge does not relocate sessions)');
     return;
   }
-  // historyReplay: adapter — no transcript replay here
+  // historyReplay: false — do NOT emit transcript via session/update
   const meta = sessionMeta(session);
   reply(id, {
     sessionId,
@@ -633,6 +758,7 @@ async function handleSessionSetConfigOption(
     await killSessionChild(session);
   }
   session.updatedAt = new Date().toISOString();
+  persistSession(session);
   const meta = sessionMeta(session);
   reply(id, {
     sessionId,
@@ -721,6 +847,7 @@ async function handleSessionPrompt(id: unknown, params: Record<string, unknown> 
 
   if (!session.title) {
     session.title = text.slice(0, 80);
+    persistSession(session);
     notifyUpdate(sessionId!, {
       sessionUpdate: 'session_info_update',
       title: session.title,
@@ -826,7 +953,7 @@ export async function main() {
   ensurePath();
   const boot = resolveSafety({});
   process.stderr.write(
-    `[agy-acp] ${AGENT_INFO.name} ${AGENT_INFO.version} ready (stream-json stdin bridge) safety=${boot.safety} skipPermissions=${boot.skipPermissions ? 1 : 0}\n`,
+    `[agy-acp] ${AGENT_INFO.name} ${AGENT_INFO.version} ready (stream-json stdin bridge) safety=${boot.safety} skipPermissions=${boot.skipPermissions ? 1 : 0} store=${sessionStore.filePath} historyReplay=false\n`,
   );
 
   const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });

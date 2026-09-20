@@ -1,3 +1,30 @@
+## v0.1.2 — disk SessionStore + resume rehydrate (2026-09-20)
+
+Lightweight on-disk session index for ACP `sessionId` ↔ agy `conversationId` mapping and launch-config snapshots. **Full transcript stays Client-side** (zustand / gateway). No history replay.
+
+### Added
+- `src/lib/session-store.ts` — JSON store (default `~/.agy-acp-map/sessions.json`, or `AGY_ACP_STORE` / `AGY_ACP_SESSION_STORE`)
+  - atomic save (temp + rename); `upsert` / `get` / `list({ cwd? })` / `delete|remove`
+- `session/new` upserts store even before `conversationId` is known
+- Mapper `conversationId` / title / config / turn-complete → upsert
+- `session/list` merges in-memory + disk (**prefer memory** when both)
+- `session/resume` rehydrates from disk when not in memory (no agy child yet; next prompt spawns with `--conversation` + saved flags). **Does not** replay history via `session/update`
+- `session/close` keeps disk row by default; `AGY_ACP_DELETE_ON_CLOSE=1` also deletes store row
+
+### Changed
+- `BRIDGE_CAPABILITIES.historyReplay`: `false` (was `'adapter'`) — advertise no history replay
+- `resume: true` + initialize notes: lightweight id/config store only
+- AGENT_INFO / package version → **0.1.2**
+
+### Not in scope
+- No `session/load` history replay
+- Store does **not** hold messages / tool traces / NDJSON transcripts
+
+### Tests
+- Unit: session-store CRUD + atomic write + resume rehydrate seed (`bun test src/lib`)
+
+---
+
 ## v0.1.1 — three-tier safety (2026-09-20)
 
 Clearer launch-time safety using existing agy flags. **No interactive ACP permission UI.**

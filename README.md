@@ -1,4 +1,4 @@
-# agy-acp-map — ACP v2 ↔ agy stream-json bridge (v0.1.0 · Bun + TypeScript)
+# agy-acp-map — ACP v2 ↔ agy stream-json bridge (v0.1.2 · Bun + TypeScript)
 
 **English** | **中文**
 
@@ -23,13 +23,16 @@ ACP Client  ←stdio JSON-RPC NDJSON→  src/server.ts  ←stdin/stdout stream-j
                                       ├─ src/lib/prompt-normalize.ts  (image → files + size/cleanup)
                                       ├─ src/lib/rich-content.ts      (paths → ACP image + allowlist)
                                       ├─ src/lib/path-allowlist.ts    (session root checks)
-                                      └─ src/lib/soft-deny.ts         (stderr soft-deny)
+                                      ├─ src/lib/soft-deny.ts         (stderr soft-deny)
+                                      └─ src/lib/session-store.ts     (disk id/config index)
 ```
 
-- **No SQLite**: never reads `~/.agy` DBs or conversation stores.
+- **No SQLite / no `~/.agy` DB reads**: never opens agy conversation stores.
+- **Lightweight SessionStore** (`~/.agy-acp-map/sessions.json`): ACP `sessionId` ↔ agy `conversationId` + launch snapshot only. **Not** a transcript DB.
+- **Client owns transcript** (e.g. zustand / gateway UI). Bridge advertises `historyReplay: false`.
 - **No Zed / Antigravity plugin code**.
 - **Persistent stdin stream-json** (same child across turns until cancel/config change).
-- **Resume:** after cancel/kill/crash, respawn passes `--conversation <id>` when known.
+- **Resume:** `session/resume` rehydrates from memory or disk; next prompt respawns with `--conversation <id>` + saved flags. No history replay via `session/update`.
 
 ## Requirements / 环境
 
@@ -60,7 +63,7 @@ bun run smoke:all                 # units + full live matrix
 **Windows:** install [Bun](https://bun.sh), put `agy` on `PATH`, then the same commands.
 
 
-## Launch flags / 启动参数 (v0.1.1)
+## Launch flags / 启动参数 (v0.1.2)
 
 Configure on **`session/new`** (preferred) and/or env fallbacks. Stored on the Session; every `spawnAgy` builds argv via `buildAgyArgs(session)`.
 
@@ -85,20 +88,52 @@ Invalid model / effort values fail **loud** at agy spawn (stderr + turn ends); t
 
 无效的 model/effort 会在 agy 启动时失败（stderr 可见）；桥接层不做模型目录校验。
 
+### Session store / 会话索引 (v0.1.2)
+
+**What is stored / 存什么**
+
+| Field | Meaning |
+|-------|---------|
+| `sessionId` | ACP id minted by this bridge |
+| `conversationId` | agy conversation id when known |
+| `title`, `cwd`, `additionalDirectories` | display / workspace |
+| `model`, `effort`, `mode`, `agent`, `safety`, `sandbox`, `jsonSchema`, `printTimeout`, `disableSlashCommands` | launch snapshot for respawn |
+| `createdAt`, `updatedAt` | ISO timestamps |
+
+**What is NOT stored / 不存什么**
+
+- Messages, tool traces, NDJSON event logs, images, or any full transcript
+- Client UI state — **zustand / ACP Client owns the transcript**
+
+Default path: `~/.agy-acp-map/sessions.json`. Override with `AGY_ACP_STORE` or `AGY_ACP_SESSION_STORE`.
+
+默认路径：`~/.agy-acp-map/sessions.json`；可用 `AGY_ACP_STORE` / `AGY_ACP_SESSION_STORE` 覆盖。
+
+### Resume vs load / 恢复 vs 加载
+
+| | `session/resume` (this bridge) | History load / replay |
+|--|-------------------------------|------------------------|
+| Purpose | Re-attach ACP `sessionId` → memory + spawn with `--conversation` | Stream past turns into UI |
+| Bridge behavior | Rehydrate id/config from memory or **disk store**; **no** `session/update` history | **Not implemented** (`historyReplay: false`) |
+| Who has messages | Client already has them (or reloads from its own store) | Would be Agent → Client replay |
+
+中文：`session/resume` 只恢复 id/配置映射并在下次 prompt 带 `--conversation` 拉起 agy；**不会**通过 `session/update` 重放历史。完整对话记录由 Client（如 zustand）持有。不实现 `session/load` 式 history replay。
+
 ### Resume & dynamic config / 恢复与动态配置
 
-1. **First spawn** of a brand-new session: omit `--conversation`.
-2. Mapper learns `conversation_id` from agy `init`/`result` → persisted as `session.conversationId`.
-3. Exported in `session/new` result `_meta`, `session/list` (`conversationId` + `_meta`), and `session/resume` `_meta`.
+1. **First spawn** of a brand-new session: omit `--conversation`; `session/new` upserts disk store immediately.
+2. Mapper learns `conversation_id` from agy `init`/`result` → `session.conversationId` + store upsert.
+3. Exported in `session/new` / `session/resume` `_meta`, and `session/list` (`_meta.conversationId` when present). `session/list` merges memory + disk (**prefer memory**).
 4. After cancel/kill/crash **respawn**: `--conversation <id>` so Agent-side context resumes.
-5. **Change model mid-life (recommended):** wait idle → `session/close` → `session/new` with `{ cwd, conversationId, model, ... }`.
-6. **Or** idle `session/set_config_option`:
+5. After **close** or process restart: `session/resume` with stored `sessionId` rehydrates into memory (no child yet); next prompt spawns with saved flags + `--conversation`. Disk row kept on close unless `AGY_ACP_DELETE_ON_CLOSE=1`.
+6. **Change model mid-life (recommended):** wait idle → `session/close` → `session/new` with `{ cwd, conversationId, model, ... }`.
+7. **Or** idle `session/set_config_option`:
    ```json
    { "sessionId": "...", "configId": "model|effort|mode|agent|sandbox|jsonSchema|printTimeout|safety|disableSlashCommands", "value": "..." }
    ```
    Updates session fields, kills lingering child; **next** `session/prompt` respawns with new flags + `--conversation`. When busy → error `-32002`.
 
-`bridgeCapabilities.dynamicConfig: "restart"` · `resume: true` (conversation flag on respawn).
+`bridgeCapabilities.dynamicConfig: "restart"` · `resume: true` · `historyReplay: false`.
 
 ## Env / 环境变量
 
@@ -116,6 +151,8 @@ Invalid model / effort values fail **loud** at agy spawn (stderr + turn ends); t
 | `AGY_ACP_SANDBOX` | — | `1`/`0` → force sandbox on/off for `safe`/`autonomous`. Ignored for `autonomous-unsandboxed` (never sandboxed). |
 | `AGY_ACP_JSON_SCHEMA` | — | Schema string or file path for `--json-schema` |
 | `AGY_ACP_KEEP_STAGING` | — | `1` → keep `.agy-acp-staging` files after turn/close (debug) |
+| `AGY_ACP_STORE` / `AGY_ACP_SESSION_STORE` | `~/.agy-acp-map/sessions.json` | Disk session index path (`SESSION_STORE` wins if both set) |
+| `AGY_ACP_DELETE_ON_CLOSE` | unset | `1`/`true` → also delete store row on `session/close` (default: **keep** disk for resume) |
 
 ## `initialize` → bridgeCapabilities
 
@@ -126,13 +163,13 @@ Returned alongside standard ACP fields (also under `_meta.bridgeCapabilities`):
 | `prompt` | `true` | |
 | `streaming` | `true` | |
 | `tools` | `true` | Mapped from agy tool steps |
-| `resume` | `true` | Persists `conversationId`; respawn passes `--conversation` |
+| `resume` | `true` | Disk/memory SessionStore; respawn passes `--conversation` |
 | `permissionRoundTrip` | `false` | No ACP permission UI |
 | `permissionMode` | `safety_tiers` | Launch strategies only; no ACP permission UI |
 | `safetyTiers` | `[safe, autonomous, autonomous-unsandboxed]` | See Safety modes table |
 | `nativeCancel` | `false` | |
 | `cancelMode` | `SIGINT_then_KILL` | |
-| `historyReplay` | `adapter` | Gateway must own transcript |
+| `historyReplay` | `false` | No Agent→Client history replay; Client owns transcript |
 | `dynamicConfig` | `restart` | `session/new` + idle `set_config_option` / close+new |
 | `richContentInput` | `degrade_to_files` | Images → `.agy-acp-staging/` + text path |
 | `richContentOutput` | `best_effort` | Detect paths; inline base64 ≤2MB |
@@ -198,6 +235,7 @@ Without skip-permissions, agy may stderr e.g.:
 | `src/lib/rich-content.ts` | Image path extract / ACP image block |
 | `src/lib/path-allowlist.ts` | Session cwd/staging/add-dir allowlist |
 | `src/lib/soft-deny.ts` | Stderr soft-deny parser |
+| `src/lib/session-store.ts` | Disk session id/config index (atomic JSON) |
 | `docs/AGY_ACP_MAP_ANALYSIS.zh-CN.md` | Architecture analysis (kept) |
 | `src/test-agy-args.ts / `bun test`` | Unit tests (no live agy) |
 | `src/client-smoke*.ts` | Smokes |
@@ -205,11 +243,11 @@ Without skip-permissions, agy may stderr e.g.:
 | `SMOKE_*.md` | Smoke reports |
 
 
-## Opinion / 看法（v0.1.0）
+## Opinion / 看法（v0.1.2）
 
-Agree with the analysis: **stream-json > PTY/SQLite** for coupling; still need process supervision, allowlists, staging cleanup, and a real session store later. 0.1.0 baseline includes those hardenings.
+Agree with the analysis: **stream-json > PTY/SQLite** for coupling. 0.1.0+ added process supervision, allowlists, staging cleanup; **0.1.2** adds the lightweight disk SessionStore (id mapping only — Client still owns transcript).
 
-认同分析结论：stream-json 在耦合上优于 PTY/SQLite；仍需进程监督、路径白名单、staging 清理，以及后续的 session store。0.1.0 基线已包含前三项工程化。
+认同分析结论：stream-json 在耦合上优于 PTY/SQLite。0.1.0+ 已有进程监督、白名单、staging 清理；**0.1.2** 增加轻量磁盘 SessionStore（仅 id/配置映射，对话正文仍由 Client 持有）。
 
 ## Engineering baseline (0.1.0) / 工程基线
 
@@ -225,12 +263,22 @@ Agree with the analysis: **stream-json > PTY/SQLite** for coupling; still need p
 
 See also `docs/AGY_ACP_MAP_ANALYSIS.zh-CN.md` (analysis kept; P0 items addressed in this release).
 
+## Session store engineering (0.1.2) / 会话存储工程
+
+| Area | Behavior |
+|------|----------|
+| Atomic write | Write `.<name>.<pid>.<ts>.tmp` then `rename` into place |
+| `session/list` | Union of memory + disk; **memory wins** on same `sessionId` |
+| `session/resume` | Memory hit → existing behavior; disk-only → rehydrate Session (no child); unknown → JSON-RPC `-32001` |
+| `session/close` | Kill child, drop memory; **keep** disk row (unless `AGY_ACP_DELETE_ON_CLOSE=1`) |
+| History | Never emits past turns on resume |
+
 ## Limitations / 限制
 
 - MCP servers from `session/new` ignored (agy has its own).
 - No ACP permission round-trip UI (`permissionRoundTrip: false`).
 - Cancel = SIGINT then SIGKILL (no mid-turn stream cancel API).
-- History replay is adapter-owned (`historyReplay: 'adapter'`).
+- No history replay (`historyReplay: false`). Client / zustand owns transcript; store is id+config only.
 - Image input depends on agy `view_file` / vision actually reading the staged path.
 - Image output inlining is best-effort (path detection + 2MB cap); `generate_image` may be slow or gated.
 - `usage_update.size` is a soft floor (200k).
