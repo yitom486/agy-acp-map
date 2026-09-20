@@ -1,3 +1,16 @@
+## v0.1.3 — ACP v1/v2 typing, thought stream, FIFO queue & resume handler (2026-09-20)
+
+### Fixed & Added
+- **Capabilities Alignment**: Registered active handlers for `session/resume`, `session/load`, and `session/set_config_option` in `agent-sdk.ts`.
+- **Thought Streaming**: Implemented `step_update.agent_response.thought_delta` mapping to ACP `agent_thought_chunk`.
+- **Sequential Notification Queue**: Added `AsyncSerialQueue` in `agent-sdk.ts` to serialize notification events in strict FIFO order, eliminating async delivery races.
+- **Promise Anti-pattern Removed**: Removed `new Promise(async ...)` in `promptSession()`.
+- **Discovery Bug**: Fixed `initialize()` accessing undefined `discovery.models` / `discovery.agents` by using `discovery.availableModels` / `discovery.availableAgents`.
+- **Staging Lifecycle**: Per-turn automatic cleanup of temporary staging files in `.agy-acp-staging` (respecting `AGY_ACP_KEEP_STAGING=1`).
+- **Version Normalization**: Aligned all package manifests and components strictly to `v0.1.3`.
+
+---
+
 ## v0.1.2.1 — docs (2026-09-20)
 
 - Document non-goals: no OneShot `-p` backend; no permission round-trip; no history replay in bridge.
@@ -55,18 +68,16 @@ Backward compat: `AGY_ACP_SKIP_PERMISSIONS=1` ≈ autonomous when safety unset; 
 
 ---
 
-## v0.1.0 — versioning reset (2026-09-20)
+## v0.1.0 — versioning baseline (2026-09-20)
 
-Semver reset: the former rapid `0.3`/`0.4`/`0.5` tags are removed from the remote.
-This `0.1.0` tag points at the same engineering baseline that was briefly labeled `v0.5.0`
-(process manager, allowlists, staging cleanup, Windows image paths, safe defaults, discovery).
-Future fixes: `0.1.1`, `0.1.2`, …
+Engineering baseline (process manager, allowlists, staging cleanup, Windows image paths, safe defaults, discovery).
+Future fixes: `0.1.1`, `0.1.2`, `0.1.3`…
 
 ---
 
 # Changelog
 
-## Historical note — briefly tagged v0.5.0 (now 0.1.0)
+## Historical note — early engineering baseline (now 0.1.0)
 
 P0 items from `docs/AGY_ACP_MAP_ANALYSIS.zh-CN.md` §12.
 
@@ -85,7 +96,7 @@ P0 items from `docs/AGY_ACP_MAP_ANALYSIS.zh-CN.md` §12.
 - Relative image output paths resolve against session cwd (not `process.cwd()`)
 
 ### Docs
-- README opinion note + v0.5.0 engineering section
+- README opinion note + engineering section
 - TEST_MATRIX updated; analysis doc retained
 
 ## v0.4.1

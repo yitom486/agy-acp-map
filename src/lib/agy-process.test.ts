@@ -67,7 +67,7 @@ describe('AgyProcessManager generation', () => {
     let errMsg = '';
     let errGen = -1;
     await mgr.spawn({
-      bin: '/no/such/agy-binary-xyz-0.5.0',
+      bin: '/no/such/agy-binary-xyz-0.1.3',
       args: [],
       cwd: process.cwd(),
       onEvent: () => {},

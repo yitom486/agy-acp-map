@@ -67,6 +67,7 @@ export class AgyProcessManager {
       cwd: opts.cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       env: opts.env ?? { ...process.env },
+      windowsHide: true,
     });
 
     this.child = child;
@@ -89,6 +90,10 @@ export class AgyProcessManager {
     child.stderr?.on('data', (buf: Buffer | string) => {
       if (gen !== this.generation || this.child !== child) return;
       opts.onStderr?.(buf.toString(), gen);
+    });
+
+    child.stdin?.on('error', () => {
+      // Swallow EPIPE / closed pipe errors to prevent process crash
     });
 
     child.on('error', (err: Error) => {
@@ -159,7 +164,11 @@ export class AgyProcessManager {
     if (!this.isWritable()) {
       throw new Error('agy child stdin not writable');
     }
-    this.child!.stdin!.write(line.endsWith('\n') ? line : line + '\n');
+    try {
+      this.child!.stdin!.write(line.endsWith('\n') ? line : line + '\n');
+    } catch {
+      // safe swallow
+    }
   }
 }
 

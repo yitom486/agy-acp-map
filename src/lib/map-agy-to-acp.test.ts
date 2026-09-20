@@ -71,6 +71,23 @@ describe('mapAgyEvent', () => {
     expect(notifications[0]!.params.update.content.text).toBe('hello');
   });
 
+  test('agent_response thought_delta → agent_thought_chunk', () => {
+    let state = createMapperState();
+    const { notifications, state: nextState } = mapAgyEvent('s1', {
+      event: 'step_update',
+      step_update: {
+        step_index: 1,
+        step_type: 'agent_response',
+        state: 'ACTIVE',
+        thought_delta: 'Thinking through the solution...',
+      },
+    }, state);
+    expect(notifications.length).toBe(1);
+    expect(notifications[0]!.params.update.sessionUpdate).toBe('agent_thought_chunk');
+    expect(notifications[0]!.params.update.content.text).toBe('Thinking through the solution...');
+    expect(nextState.emittedThoughtDelta).toBe(true);
+  });
+
   test('tool ACTIVE then DONE', () => {
     let state = createMapperState();
     let r = mapAgyEvent('s1', {
@@ -158,7 +175,7 @@ describe('mapAgyEvent', () => {
   });
 });
 
-describe('v0.5.0 mapper hardening', () => {
+describe('v0.1.3 mapper hardening', () => {
   test('result.response fallback when no text_delta', () => {
     let state = createMapperState();
     const { notifications, state: next } = mapAgyEvent(

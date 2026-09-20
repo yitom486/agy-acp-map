@@ -8,7 +8,7 @@
  * Also accepts explicit key=value fragments: tool=, allow-rule=, path=
  * And stream-json: tool ERROR with permission/denied wording + result.denied_actions
  *
- * v0.5.0: do NOT treat generic tool ERROR as soft-deny (tighten parseSoftDenyFromEvent).
+ * v0.1.3: do NOT treat generic tool ERROR as soft-deny (tighten parseSoftDenyFromEvent).
  */
 
 export interface SoftDenyInfo {
@@ -96,7 +96,7 @@ const PERMISSION_HINT =
 
 /**
  * Extract soft-denies from a single agy NDJSON event (tool ERROR / result.denied_actions).
- * Generic tool errors without permission wording are ignored (v0.5.0 tighten).
+ * Generic tool errors without permission wording are ignored (v0.1.3 tighten).
  */
 export function parseSoftDenyFromEvent(event: unknown): SoftDenyInfo[] {
   const out: SoftDenyInfo[] = [];

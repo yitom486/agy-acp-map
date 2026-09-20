@@ -4,6 +4,7 @@
  */
 import { spawn } from 'node:child_process';
 import path from 'node:path';
+import fs from 'node:fs';
 
 export interface DiscoveryResult {
   availableModels: string[];
@@ -68,10 +69,15 @@ export function parseAgyAgentsStdout(stdout: string): string[] {
 }
 
 function ensurePath(): void {
+  const geminiBin = path.join(process.env.USERPROFILE || process.env.HOME || '', '.gemini', 'bin');
   const extra = '/home/box/.local/bin';
   const p = process.env.PATH || '';
-  if (!p.split(path.delimiter).includes(extra)) {
-    process.env.PATH = `${extra}${path.delimiter}${p}`;
+  const parts = p.split(path.delimiter);
+  const additions: string[] = [];
+  if (geminiBin && !parts.includes(geminiBin)) additions.push(geminiBin);
+  if (extra && !parts.includes(extra)) additions.push(extra);
+  if (additions.length > 0) {
+    process.env.PATH = `${additions.join(path.delimiter)}${path.delimiter}${p}`;
   }
 }
 
@@ -102,6 +108,7 @@ function runAgySubcommand(
       child = spawn(bin, args, {
         stdio: ['ignore', 'pipe', 'pipe'],
         env: { ...process.env },
+        windowsHide: true,
       });
     } catch (err) {
       finish({
@@ -141,6 +148,17 @@ function runAgySubcommand(
 /**
  * Discover models + agents once per process. Failures → empty arrays + error notes.
  */
+const FALLBACK_MODELS = [
+  'gemini-3.8-flash-high',
+  'gemini-3.8-flash-medium',
+  'gemini-3.8-flash-low',
+  'gemini-3.7-flash-high',
+  'gemini-3.6-flash-high',
+  'gemini-3.1-pro-high',
+  'claude-sonnet-4-6',
+  'claude-opus-4-6-thinking',
+];
+
 export async function discoverAgyCatalog(opts?: {
   bin?: string;
   timeoutMs?: number;
@@ -149,8 +167,14 @@ export async function discoverAgyCatalog(opts?: {
   if (cached && !opts?.force) return cached;
   if (inflight && !opts?.force) return inflight;
 
-  const bin = opts?.bin || process.env.AGY_BIN || 'agy';
-  const timeoutMs = opts?.timeoutMs ?? 10_000;
+  let bin = opts?.bin || process.env.AGY_BIN || 'agy';
+  if (bin === 'agy' || bin === 'agy.exe') {
+    const userGemini = path.join(process.env.USERPROFILE || process.env.HOME || '', '.gemini', 'bin', process.platform === 'win32' ? 'agy.exe' : 'agy');
+    if (fs.existsSync(userGemini)) {
+      bin = userGemini;
+    }
+  }
+  const timeoutMs = opts?.timeoutMs ?? 15_000;
 
   inflight = (async () => {
     ensurePath();
@@ -159,7 +183,17 @@ export async function discoverAgyCatalog(opts?: {
       availableAgents: [],
     };
 
-    const modelsRun = await runAgySubcommand(bin, ['models'], timeoutMs);
+    // Run models and agents discovery concurrently
+    const [modelsRun, agentsRun] = await Promise.all([
+      runAgySubcommand(bin, ['models'], timeoutMs),
+      runAgySubcommand(bin, ['agents'], timeoutMs).then(async (res) => {
+        if (res.error || (res.code !== 0 && !res.stdout.trim() && !parseAgyAgentsStdout(res.stderr).length)) {
+          return runAgySubcommand(bin, ['agent'], timeoutMs);
+        }
+        return res;
+      }),
+    ]);
+
     if (modelsRun.error || (modelsRun.code !== 0 && modelsRun.code !== null && !modelsRun.stdout.trim())) {
       result.modelsError =
         modelsRun.error ||
@@ -169,21 +203,16 @@ export async function discoverAgyCatalog(opts?: {
     } else {
       result.availableModels = parseAgyModelsStdout(modelsRun.stdout);
       if (!result.availableModels.length && modelsRun.stderr.trim()) {
-        // Some CLIs print to stderr
         result.availableModels = parseAgyModelsStdout(modelsRun.stderr);
       }
     }
 
-    // Prefer `agy agents`, fall back to `agy agent`
-    let agentsRun = await runAgySubcommand(bin, ['agents'], timeoutMs);
-    if (
-      agentsRun.error ||
-      (agentsRun.code !== 0 && !agentsRun.stdout.trim() && !parseAgyAgentsStdout(agentsRun.stderr).length)
-    ) {
-      agentsRun = await runAgySubcommand(bin, ['agent'], timeoutMs);
+    // If availableModels is still empty, apply high-performance defaults
+    if (!result.availableModels.length) {
+      result.availableModels = [...FALLBACK_MODELS];
     }
+
     if (agentsRun.error || (agentsRun.code !== 0 && agentsRun.code !== null && !agentsRun.stdout.trim())) {
-      // Empty success (code 0, no output) is fine — just empty list
       if (agentsRun.error || agentsRun.code !== 0) {
         result.agentsError =
           agentsRun.error ||
@@ -209,6 +238,11 @@ export async function discoverAgyCatalog(opts?: {
 /** Test helper: clear process-lifetime cache. */
 export function clearDiscoveryCache(): void {
   cached = null;
+  inflight = null;
+}
+
+export function setCachedDiscoveryForTest(result: DiscoveryResult | null): void {
+  cached = result;
   inflight = null;
 }
 

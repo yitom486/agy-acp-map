@@ -16,12 +16,15 @@ export interface MapperState {
   tools?: string[];
   permissionMode?: string;
   agentMessageIds: Map<number, string>;
+  thoughtMessageIds?: Map<number, string>;
   toolSeen: Set<number>;
   lastStopReason?: string;
   turnDone?: boolean;
   emittedImageUris: Set<string>;
   /** True when at least one agent_response text_delta was emitted this turn. */
   emittedTextDelta?: boolean;
+  /** True when at least one agent_response thought_delta was emitted this turn. */
+  emittedThoughtDelta?: boolean;
   /** Session roots for image allowlist (set by server). */
   richRoots?: FileToAcpImageOpts;
 }
@@ -38,11 +41,13 @@ export function createMapperState(richRoots?: FileToAcpImageOpts): MapperState {
     tools: undefined,
     permissionMode: undefined,
     agentMessageIds: new Map(),
+    thoughtMessageIds: new Map(),
     toolSeen: new Set(),
     lastStopReason: undefined,
     turnDone: false,
     emittedImageUris: new Set(),
     emittedTextDelta: false,
+    emittedThoughtDelta: false,
     richRoots,
   };
 }
@@ -52,11 +57,13 @@ export function resetTurnState(state: MapperState): MapperState {
   return {
     ...state,
     agentMessageIds: new Map(),
+    thoughtMessageIds: new Map(),
     toolSeen: new Set(),
     lastStopReason: undefined,
     turnDone: false,
     emittedImageUris: new Set(),
     emittedTextDelta: false,
+    emittedThoughtDelta: false,
   };
 }
 
@@ -103,6 +110,47 @@ function agentMessageIdForStep(state: MapperState, stepIndex: number) {
     state.agentMessageIds.set(stepIndex, `msg_agent_agy_${stepIndex}`);
   }
   return state.agentMessageIds.get(stepIndex)!;
+}
+
+function agentThoughtIdForStep(state: MapperState, stepIndex: number) {
+  if (!state.thoughtMessageIds) state.thoughtMessageIds = new Map();
+  if (!state.thoughtMessageIds.has(stepIndex)) {
+    state.thoughtMessageIds.set(stepIndex, `msg_thought_agy_${stepIndex}`);
+  }
+  return state.thoughtMessageIds.get(stepIndex)!;
+}
+
+/** Format or downgrade updates according to client ACP protocol version (v1 vs v2). */
+export function formatUpdateForProtocol(
+  update: Record<string, unknown>,
+  protocolVersion: number,
+): Record<string, unknown> {
+  if (protocolVersion >= 2) return update;
+
+  // Protocol v1 downgrade:
+  if (update.sessionUpdate === 'tool_call_update') {
+    return {
+      sessionUpdate: 'tool_call',
+      toolCallId: update.toolCallId,
+      name: update.title,
+      title: update.title,
+      status: update.status,
+      content: update.content,
+      rawInput: update.rawInput,
+      rawOutput: update.rawOutput,
+      rawError: update.rawError,
+    };
+  }
+
+  if (update.sessionUpdate === 'agent_thought_chunk') {
+    return {
+      sessionUpdate: 'agent_message_chunk',
+      messageId: update.messageId,
+      content: update.content,
+    };
+  }
+
+  return update;
 }
 
 function stringifyOut(output: unknown, error: unknown) {
@@ -210,6 +258,20 @@ export function mapAgyEvent(
           emitImageAgentChunks(sessionId, state, paths, notifications);
         }
       }
+
+      const thought = s.thought_delta || (s.agent_response as any)?.thought_delta;
+      if (typeof thought === 'string' && thought.length > 0) {
+        state.emittedThoughtDelta = true;
+        const messageId = agentThoughtIdForStep(state, stepIndex);
+        notifications.push(
+          notify(sessionId, {
+            sessionUpdate: 'agent_thought_chunk',
+            messageId,
+            content: { type: 'text', text: thought },
+          }),
+        );
+      }
+
       return { notifications, state };
     }
 
