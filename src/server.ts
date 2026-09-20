@@ -55,7 +55,7 @@ import { AgyProcessManager } from './lib/agy-process.ts';
 const AGENT_INFO = {
   name: 'agy-acp',
   title: 'agy ACP (stream-json)',
-  version: '0.5.0',
+  version: '0.1.0',
 };
 
 const BRIDGE_CAPABILITIES = {
@@ -450,7 +450,7 @@ async function handleInitialize(id: unknown, params: Record<string, unknown> | u
       safetyNote:
         'safe (default): no --dangerously-skip-permissions; soft-deny scrape enabled. autonomous: skip permissions; sandbox on if sandbox unset. Overrides: AGY_ACP_SKIP_PERMISSIONS, AGY_ACP_SANDBOX, session fields.',
       engineeringNote:
-        'v0.5.0: child error handling, process generation tokens, image path allowlist, staging size limits + cleanup',
+        '0.1.0 baseline: child error handling, process generation, image allowlist, staging cleanup (ex-hardening)',
     },
   };
   if (protocolVersion === 2) {

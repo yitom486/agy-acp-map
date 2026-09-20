@@ -1,4 +1,4 @@
-# TEST_MATRIX — agy-acp-map v0.5.0 (Bun + TypeScript)
+# TEST_MATRIX — agy-acp-map v0.1.0 (Bun + TypeScript)
 
 Honest pass/fail. Live tests need logged-in `agy` on PATH.
 
@@ -36,7 +36,7 @@ Honest pass/fail. Live tests need logged-in `agy` on PATH.
 | `bun run smoke:all` | Units + all live smokes including robustness |
 | `bun run start` | `bun src/server.ts` stdio agent |
 
-## v0.5.0 behavior notes
+## v0.1.0 behavior notes
 
 - Child process supervision via `AgyProcessManager` (generation tokens; ignore stale NDJSON).
 - Image reads allowlisted to session `cwd` / `.agy-acp-staging` / `additionalDirectories`.

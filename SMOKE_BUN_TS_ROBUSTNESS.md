@@ -1,4 +1,4 @@
-# Robustness smoke (Bun + TypeScript) — v0.5.0
+# Robustness smoke (Bun + TypeScript) — v0.1.0
 
 Date: 2026-09-20T16:57:34+08:00 (Asia/Shanghai)
 

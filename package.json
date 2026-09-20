@@ -1,6 +1,6 @@
 {
   "name": "agy-acp-map",
-  "version": "0.5.0",
+  "version": "0.1.0",
   "description": "Minimal ACP v2 stdio agent bridging Google agy via official stream-json NDJSON (Bun + TypeScript)",
   "type": "module",
   "bin": {

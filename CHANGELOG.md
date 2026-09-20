@@ -1,6 +1,15 @@
+## v0.1.0 — versioning reset (2026-09-20)
+
+Semver reset: the former rapid `0.3`/`0.4`/`0.5` tags are removed from the remote.
+This `0.1.0` tag points at the same engineering baseline that was briefly labeled `v0.5.0`
+(process manager, allowlists, staging cleanup, Windows image paths, safe defaults, discovery).
+Future fixes: `0.1.1`, `0.1.2`, …
+
+---
+
 # Changelog
 
-## v0.5.0 — engineering hardening (2026-09-20)
+## Historical note — briefly tagged v0.5.0 (now 0.1.0)
 
 P0 items from `docs/AGY_ACP_MAP_ANALYSIS.zh-CN.md` §12.
 

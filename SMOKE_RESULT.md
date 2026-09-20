@@ -1,4 +1,4 @@
-# Smoke result — v0.5.0 (2026-09-20 Asia/Shanghai)
+# Smoke result — v0.1.0 (2026-09-20 Asia/Shanghai)
 
 ## Unit
 `bun test src/lib` → **77 pass / 0 fail**

@@ -1,4 +1,4 @@
-# agy-acp-map — ACP v2 ↔ agy stream-json bridge (v0.5.0 · Bun + TypeScript)
+# agy-acp-map — ACP v2 ↔ agy stream-json bridge (v0.1.0 · Bun + TypeScript)
 
 **English** | **中文**
 
@@ -60,7 +60,7 @@ bun run smoke:all                 # units + full live matrix
 **Windows:** install [Bun](https://bun.sh), put `agy` on `PATH`, then the same commands.
 
 
-## Launch flags / 启动参数 (v0.5.0)
+## Launch flags / 启动参数 (v0.1.0)
 
 Configure on **`session/new`** (preferred) and/or env fallbacks. Stored on the Session; every `spawnAgy` builds argv via `buildAgyArgs(session)`.
 
@@ -193,13 +193,13 @@ Without skip-permissions, agy may stderr e.g.:
 | `SMOKE_*.md` | Smoke reports |
 
 
-## Opinion / 看法（v0.5.0）
+## Opinion / 看法（v0.1.0）
 
-Agree with the analysis: **stream-json > PTY/SQLite** for coupling; still need process supervision, allowlists, staging cleanup, and a real session store later. v0.5.0 hardens the first three.
+Agree with the analysis: **stream-json > PTY/SQLite** for coupling; still need process supervision, allowlists, staging cleanup, and a real session store later. 0.1.0 baseline includes those hardenings.
 
-认同分析结论：stream-json 在耦合上优于 PTY/SQLite；仍需进程监督、路径白名单、staging 清理，以及后续的 session store。v0.5.0 先把前三项工程化。
+认同分析结论：stream-json 在耦合上优于 PTY/SQLite；仍需进程监督、路径白名单、staging 清理，以及后续的 session store。0.1.0 基线已包含前三项工程化。
 
-## v0.5.0 engineering / 工程加固
+## Engineering baseline (0.1.0) / 工程基线
 
 | Area | Change |
 |------|--------|
