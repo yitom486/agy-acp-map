@@ -1,31 +1,20 @@
 #!/usr/bin/env bun
 /**
- * Live smoke for v0.3 launch flags + --conversation respawn.
- *
- * 1. session/new with a flash-like model (from `agy models` if available)
- * 2. prompt "Reply with exactly: flagok"
- * 3. cancel/kill child; second prompt asks for the exact word → expect flagok
- * 4. optional sandbox=true no-shell prompt
- * 5. json-schema session/new → verify spawn includes --json-schema + idle SUCCESS
+ * Live smoke for launch flags + --conversation respawn.
  */
 import { spawn, execSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
+import { ensurePath, DEFAULT_SERVER_PATH } from './helpers.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SERVER = path.join(__dirname, 'server.ts');
-const CWD = path.join(__dirname, '..', 'smoke-workdir-flags');
+const SERVER = DEFAULT_SERVER_PATH;
+const ROOT = path.resolve(__dirname, '../..');
+const CWD = path.join(ROOT, 'smoke-workdir-flags');
 const TIMEOUT_MS = Number(process.env.SMOKE_TIMEOUT_MS || 180000);
 
-function ensurePath() {
-  const extra = '/home/box/.local/bin';
-  const p = process.env.PATH || '';
-  if (!p.split(path.delimiter).includes(extra)) {
-    process.env.PATH = `${extra}${path.delimiter}${p}`;
-  }
-}
 ensurePath();
 fs.mkdirSync(CWD, { recursive: true });
 
@@ -42,7 +31,7 @@ function pickModel() {
       .filter((id) => id && !id.startsWith('Fetching'));
     const flash = ids.find((id) => /flash/i.test(id));
     return flash || ids[0] || null;
-  } catch (err) {
+  } catch (err: any) {
     console.error('[smoke-flags] agy models failed:', err.message);
     return null;
   }
@@ -55,29 +44,26 @@ const child = spawn(process.execPath, [SERVER], {
   stdio: ['pipe', 'pipe', 'pipe'],
   env: {
     ...process.env,
-    // Tool-using / conversation smokes need skip or autonomous under safe-default
     AGY_ACP_SKIP_PERMISSIONS: process.env.AGY_ACP_SKIP_PERMISSIONS || '1',
     AGY_ACP_SAFETY: process.env.AGY_ACP_SAFETY || 'autonomous',
   },
-  cwd: __dirname,
+  cwd: ROOT,
 });
 
 let nextId = 1;
-/** @type {Map<number, {resolve: Function, reject: Function}>} */
 const pending = new Map();
-const serverLog = [];
-const agentTexts = [];
-let conversationId = null;
-let lastIdle = null;
-/** @type {((u: object) => void) | null} */
-let onIdle = null;
+const serverLog: string[] = [];
+const agentTexts: string[] = [];
+let conversationId: string | null = null;
+let lastIdle: any = null;
+let onIdle: ((u: any) => void) | null = null;
 
-function log(tag, obj) {
+function log(tag: string, obj: any) {
   const line = typeof obj === 'string' ? obj : JSON.stringify(obj);
   console.log(`[smoke-flags:${tag}] ${line}`);
 }
 
-function send(method, params) {
+function send(method: string, params?: any): Promise<any> {
   const id = nextId++;
   const msg = { jsonrpc: '2.0', id, method, params };
   child.stdin.write(JSON.stringify(msg) + '\n');
@@ -87,12 +73,12 @@ function send(method, params) {
   });
 }
 
-function notify(method, params) {
+function notify(method: string, params?: any) {
   child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method, params }) + '\n');
   log('notify→', { method, params });
 }
 
-function waitIdle(timeoutMs = TIMEOUT_MS, sessionId = null) {
+function waitIdle(timeoutMs = TIMEOUT_MS, sessionId: string | null = null): Promise<any> {
   return new Promise((resolve, reject) => {
     if (lastIdle && lastIdle.pending && (!sessionId || lastIdle.sessionId === sessionId)) {
       lastIdle.pending = false;
@@ -116,7 +102,7 @@ const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
 rl.on('line', (line) => {
   const t = line.trim();
   if (!t) return;
-  let msg;
+  let msg: any;
   try {
     msg = JSON.parse(t);
   } catch {
@@ -141,7 +127,6 @@ rl.on('line', (line) => {
     if (u?.sessionUpdate === 'state_update' && u.state === 'idle') {
       lastIdle = { ...u, pending: true, at: Date.now(), sessionId: msg.params?.sessionId };
       if (onIdle) {
-        // Let waitIdle decide whether to accept (session filter)
         onIdle({ ...u, sessionId: msg.params?.sessionId });
         if (!onIdle) lastIdle.pending = false;
       }
@@ -155,22 +140,21 @@ child.stderr.on('data', (buf) => {
     if (!line.trim()) continue;
     serverLog.push(line);
     console.error(`[server] ${line}`);
-    // Capture conversation id from spawn log if present
     const m = line.match(/conversation=([^\s]+)/);
     if (m) conversationId = m[1];
   }
 });
 
-function spawnArgsInclude(flag) {
+function spawnArgsInclude(flag: string) {
   return serverLog.some((l) => l.includes('[agy-acp] spawn') && l.includes(flag));
 }
 
-function collectConversationFromList(listResult) {
+function collectConversationFromList(listResult: any) {
   const s = listResult?.sessions?.[0];
   return s?.conversationId || s?._meta?.conversationId || null;
 }
 
-const results = {
+const results: Record<string, any> = {
   turn1: false,
   conversationPersisted: false,
   respawnConversationFlag: false,
@@ -179,7 +163,7 @@ const results = {
   jsonSchema: null,
 };
 
-async function runTurn1(sessionId) {
+async function runTurn1(sessionId: string) {
   agentTexts.length = 0;
   lastIdle = null;
   await send('session/prompt', {
@@ -192,10 +176,8 @@ async function runTurn1(sessionId) {
   log('check', `turn1 text=${JSON.stringify(text.slice(0, 200))} idle=${idle.stopReason} pass=${results.turn1}`);
 }
 
-async function cancelAndRespawn(sessionId) {
-  // Force kill child via cancel so next prompt respawns
+async function cancelAndRespawn(sessionId: string) {
   notify('session/cancel', { sessionId });
-  // Wait briefly for child exit
   await new Promise((r) => setTimeout(r, 2500));
 
   const listed = await send('session/list', { cwd: CWD });
@@ -206,7 +188,6 @@ async function cancelAndRespawn(sessionId) {
   }
   log('check', `conversationId=${cid}`);
 
-  // Clear idle latch from cancel if any
   lastIdle = null;
   agentTexts.length = 0;
 
@@ -242,7 +223,6 @@ async function runSandboxSmoke() {
     });
     agentTexts.length = 0;
     lastIdle = null;
-    // Brief settle so prior session child exit does not steal idle
     await new Promise((r) => setTimeout(r, 1500));
     lastIdle = null;
     await send('session/prompt', {
@@ -253,14 +233,12 @@ async function runSandboxSmoke() {
     const text = agentTexts.join('');
     const spawned = spawnArgsInclude('--sandbox');
     const quota = /RESOURCE_EXHAUSTED|quota reached|429/i.test(text + serverLog.join('\n'));
-    // Primary: --sandbox passed through. Text match when model healthy.
     results.sandbox = spawned && (idle.state === 'idle') && (/sandboxok/i.test(text) || quota);
     await send('session/close', { sessionId });
     log('check', `sandbox pass=${results.sandbox} spawned=${spawned} quota=${quota} text=${JSON.stringify(text.slice(0, 120))}`);
-  } catch (err) {
+  } catch (err: any) {
     const spawned = spawnArgsInclude('--sandbox');
     const quota = /RESOURCE_EXHAUSTED|quota reached|429/i.test(serverLog.join('\n'));
-    // Spawn-flag verification still counts if we at least launched with --sandbox
     results.sandbox = spawned ? true : false;
     log('sandbox-error', `${err.message || err} spawned=${spawned} quota=${quota} → sandbox=${results.sandbox}`);
   }
@@ -268,11 +246,11 @@ async function runSandboxSmoke() {
 
 async function runJsonSchemaSmoke() {
   try {
-    const schema = {
+    const schema = JSON.stringify({
       type: 'object',
-      properties: { word: { type: 'string' } },
-      required: ['word'],
-    };
+      properties: { greeting: { type: 'string' } },
+      required: ['greeting'],
+    });
     const { sessionId } = await send('session/new', {
       cwd: CWD,
       jsonSchema: schema,
@@ -284,23 +262,17 @@ async function runJsonSchemaSmoke() {
     lastIdle = null;
     await send('session/prompt', {
       sessionId,
-      prompt: [
-        {
-          type: 'text',
-          text: 'Return a JSON object with property word set to schemaok.',
-        },
-      ],
+      prompt: [{ type: 'text', text: 'Return valid JSON matching schema with greeting: "hello"' }],
     });
     const idle = await waitIdle(120000, sessionId);
     const text = agentTexts.join('');
     const spawned = spawnArgsInclude('--json-schema');
     const quota = /RESOURCE_EXHAUSTED|quota reached|429/i.test(text + serverLog.join('\n'));
-    // Primary: --json-schema on spawn + idle (structured_output surfacing covered by unit tests)
     results.jsonSchema =
       spawned && idle.state === 'idle' && (idle.stopReason === 'end_turn' || quota);
     await send('session/close', { sessionId });
     log('check', `jsonSchema pass=${results.jsonSchema} spawned=${spawned} quota=${quota}`);
-  } catch (err) {
+  } catch (err: any) {
     const spawned = spawnArgsInclude('--json-schema');
     const quota = /RESOURCE_EXHAUSTED|quota reached|429/i.test(serverLog.join('\n'));
     results.jsonSchema = spawned ? true : false;
@@ -309,7 +281,7 @@ async function runJsonSchemaSmoke() {
 }
 
 let finished = false;
-function finish(ok) {
+function finish(ok: boolean) {
   if (finished) return;
   finished = true;
   console.log('---');
@@ -335,9 +307,6 @@ try {
     capabilities: {},
     info: { name: 'agy-acp-smoke-flags', version: '0.0.1' },
   });
-  if (init.info?.version !== '0.4.1') {
-    console.warn('[smoke-flags] warn: expected info.version 0.4.1 got', init.info?.version);
-  }
   if (init.bridgeCapabilities?.dynamicConfig !== 'restart') {
     throw new Error('bridgeCapabilities.dynamicConfig expected restart');
   }
@@ -345,13 +314,12 @@ try {
     throw new Error('bridgeCapabilities.resume expected true');
   }
 
-  const newParams = { cwd: CWD };
+  const newParams: Record<string, any> = { cwd: CWD };
   if (MODEL) newParams.model = MODEL;
   const newRes = await send('session/new', newParams);
   const sessionId = newRes.sessionId;
   if (!sessionId) throw new Error('no sessionId');
 
-  // Optional: set_config_option smoke (idle)
   if (MODEL) {
     const cfg = await send('session/set_config_option', {
       sessionId,
@@ -363,7 +331,6 @@ try {
 
   await runTurn1(sessionId);
 
-  // Persist conversation via list after turn1
   const listed1 = await send('session/list', { cwd: CWD });
   const cid1 = collectConversationFromList(listed1);
   if (cid1) {
@@ -383,16 +350,15 @@ try {
     results.conversationPersisted &&
     results.respawnConversationFlag &&
     results.turn2Context;
-  // sandbox/jsonSchema: true pass; null = not run; false = hard fail unless only quota flake on text
   const flagsOk =
     (results.sandbox === true || results.sandbox === null) &&
     (results.jsonSchema === true || results.jsonSchema === null);
-  const ok = core && flagsOk;
-  // Write brief report
-  const report = `# SMOKE_FLAGS\n\n- **When**: ${new Date().toISOString()} (Asia/Shanghai)\n- **Outcome**: **${ok ? 'PASS' : 'FAIL'}**\n- **version**: 0.4.1\n\n\`\`\`json\n${JSON.stringify(results, null, 2)}\n\`\`\`\n`;
+  const ok = Boolean(core && flagsOk);
+
+  const report = `# SMOKE_FLAGS\n\n- **When**: ${new Date().toISOString()} (Asia/Shanghai)\n- **Outcome**: **${ok ? 'PASS' : 'FAIL'}**\n\n\`\`\`json\n${JSON.stringify(results, null, 2)}\n\`\`\`\n`;
   try {
-    fs.writeFileSync(path.join(__dirname, '..', 'SMOKE_FLAGS.md'), report);
-  } catch (e) {
+    fs.writeFileSync(path.join(ROOT, 'SMOKE_FLAGS.md'), report);
+  } catch (e: any) {
     log('report-err', e.message);
   }
   finish(ok);

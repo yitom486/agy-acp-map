@@ -8,39 +8,38 @@ import { createInterface } from 'node:readline';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
+import { ensurePath, DEFAULT_SERVER_PATH } from './helpers.ts';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SERVER = path.join(__dirname, 'server.ts');
-const OUT = path.join(__dirname, '..', 'SMOKE_IMAGE_OUT.md');
-const CWD = path.join(__dirname, '..', 'smoke-workdir-image-out');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const ROOT = path.resolve(__dirname, '../..');
+const SERVER = DEFAULT_SERVER_PATH;
+const OUT = path.join(ROOT, 'SMOKE_IMAGE_OUT.md');
+const CWD = path.join(ROOT, 'smoke-workdir-image-out');
 const TIMEOUT_MS = Number(process.env.SMOKE_TIMEOUT_MS || 240000);
 
 fs.mkdirSync(CWD, { recursive: true });
-
-function ensurePath() {
-  const extra = '/home/box/.local/bin';
-  const p = process.env.PATH || '';
-  if (!p.split(path.delimiter).includes(extra)) {
-    process.env.PATH = `${extra}${path.delimiter}${p}`;
-  }
-}
 ensurePath();
 
 const child = spawn(process.execPath, [SERVER], {
   stdio: ['pipe', 'pipe', 'pipe'],
-  env: { ...process.env, AGY_ACP_SKIP_PERMISSIONS: process.env.AGY_ACP_SKIP_PERMISSIONS || '1', AGY_ACP_SAFETY: process.env.AGY_ACP_SAFETY || 'autonomous' },
-  cwd: __dirname,
+  env: {
+    ...process.env,
+    AGY_ACP_SKIP_PERMISSIONS: process.env.AGY_ACP_SKIP_PERMISSIONS || '1',
+    AGY_ACP_SAFETY: process.env.AGY_ACP_SAFETY || 'autonomous',
+  },
+  cwd: ROOT,
 });
 
 let nextId = 1;
 const pending = new Map();
-const agentTexts = [];
-const toolCalls = [];
+const agentTexts: string[] = [];
+const toolCalls: any[] = [];
 let sawGenerateImage = false;
 let sawAcpImage = false;
-let imagePaths = [];
+let imagePaths: string[] = [];
 
-function send(method, params) {
+function send(method: string, params?: any): Promise<any> {
   const id = nextId++;
   child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
   return new Promise((resolve, reject) => pending.set(id, { resolve, reject }));
@@ -50,7 +49,7 @@ const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
 rl.on('line', (line) => {
   const t = line.trim();
   if (!t) return;
-  let msg;
+  let msg: any;
   try {
     msg = JSON.parse(t);
   } catch {
@@ -73,7 +72,7 @@ rl.on('line', (line) => {
       }
     }
     if (u?.sessionUpdate === 'tool_call_update') {
-      toolCalls.push({ title: u.title, status: u.status, contentTypes: (u.content || []).map((c) => c.content?.type) });
+      toolCalls.push({ title: u.title, status: u.status, contentTypes: (u.content || []).map((c: any) => c.content?.type) });
       if (String(u.title || '').toLowerCase() === 'generate_image') sawGenerateImage = true;
       for (const c of u.content || []) {
         if (c.content?.type === 'image') {
@@ -81,7 +80,7 @@ rl.on('line', (line) => {
           if (c.content.uri) imagePaths.push(c.content.uri);
         }
         if (c.content?.type === 'text') {
-          const m = c.content.text.match(/(\/[^\s"'`]+\.(?:png|jpe?g|webp|gif))/gi);
+          const m = c.content.text.match(/((?:[A-Za-z]:[\\/]|\/)[^\s"'`]+\.(?:png|jpe?g|webp|gif))/gi);
           if (m) imagePaths.push(...m);
         }
       }
@@ -99,7 +98,7 @@ child.stderr.on('data', (buf) => {
 });
 
 let finished = false;
-function finish(stopReason) {
+function finish(stopReason: string) {
   if (finished) return;
   finished = true;
   clearTimeout(timer);
@@ -140,7 +139,6 @@ ${answer.slice(0, 2000) || '(empty)'}
     /* */
   }
   child.kill('SIGTERM');
-  // PARTIAL counts as exit 0 for CI softness; FAIL exit 1
   setTimeout(() => process.exit(outcome === 'FAIL' ? 1 : 0), 400).unref?.();
 }
 

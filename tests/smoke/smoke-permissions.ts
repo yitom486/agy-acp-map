@@ -9,42 +9,37 @@ import { createInterface } from 'node:readline';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
-import { parseSoftDeny } from './lib/soft-deny.ts';
+import { parseSoftDeny } from '../../src/lib/soft-deny.ts';
+import { ensurePath, DEFAULT_SERVER_PATH } from './helpers.ts';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SERVER = path.join(__dirname, 'server.ts');
-const OUT = path.join(__dirname, '..', 'SMOKE_PERMISSIONS.md');
-const CWD = path.join(__dirname, '..', 'smoke-workdir-perms');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const ROOT = path.resolve(__dirname, '../..');
+const SERVER = DEFAULT_SERVER_PATH;
+const OUT = path.join(ROOT, 'SMOKE_PERMISSIONS.md');
+const CWD = path.join(ROOT, 'smoke-workdir-perms');
 const TIMEOUT_MS = Number(process.env.SMOKE_TIMEOUT_MS || 120000);
 const SETTLE_MS = 900;
 
 fs.mkdirSync(CWD, { recursive: true });
-
-function ensurePath() {
-  const extra = '/home/box/.local/bin';
-  const p = process.env.PATH || '';
-  if (!p.split(path.delimiter).includes(extra)) {
-    process.env.PATH = `${extra}${path.delimiter}${p}`;
-  }
-}
 ensurePath();
 
 const child = spawn(process.execPath, [SERVER], {
   stdio: ['pipe', 'pipe', 'pipe'],
   env: { ...process.env, AGY_ACP_SAFETY: 'safe', AGY_ACP_SKIP_PERMISSIONS: '0' },
-  cwd: __dirname,
+  cwd: ROOT,
 });
 
 let nextId = 1;
 const pending = new Map();
-const agentTexts = [];
-const stderrAll = [];
+const agentTexts: string[] = [];
+const stderrAll: string[] = [];
 let toolFailed = false;
 let softDenyNotify = false;
 let idleSeen = false;
-let settleTimer = null;
+let settleTimer: any = null;
 
-function send(method, params) {
+function send(method: string, params?: any): Promise<any> {
   const id = nextId++;
   child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
   return new Promise((resolve, reject) => pending.set(id, { resolve, reject }));
@@ -54,7 +49,7 @@ const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
 rl.on('line', (line) => {
   const t = line.trim();
   if (!t) return;
-  let msg;
+  let msg: any;
   try {
     msg = JSON.parse(t);
   } catch {
@@ -97,7 +92,7 @@ child.stderr.on('data', (buf) => {
 });
 
 let finished = false;
-function finish(stopReason) {
+function finish(stopReason: string) {
   if (finished) return;
   finished = true;
   clearTimeout(timer);

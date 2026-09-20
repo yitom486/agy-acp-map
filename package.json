@@ -1,30 +1,64 @@
 {
   "name": "agy-acp-map",
   "version": "0.1.2",
-  "description": "Minimal ACP v2 stdio agent bridging Google agy via official stream-json NDJSON (Bun + TypeScript)",
+  "description": "Universal ACP v1/v2 bridge for Google Antigravity CLI (agy) supporting Zed, Cursor, and Electron Studio",
   "type": "module",
   "bin": {
-    "agy-acp": "./src/server.ts"
+    "agy-acp": "./dist/bin.js"
   },
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
-    "start": "bun src/server.ts",
+    "build": "bun run build:js && bun run build:types",
+    "build:js": "bun build src/sdk-server.ts --target node --outfile dist/bin.js && bun build src/index.ts --target node --outfile dist/index.js",
+    "build:types": "bunx tsc -p tsconfig.build.json",
+    "prepublishOnly": "bun run build && bun test src/lib",
+    "start": "bun src/sdk-server.ts",
+    "start:dist": "node dist/bin.js",
+    "start:legacy": "bun archive/legacy-server.ts",
     "map": "bun src/map.ts",
     "test": "bun test src/lib",
-    "test:args": "bun src/test-agy-args.ts",
-    "smoke": "bun src/client-smoke.ts",
-    "smoke:flags": "bun src/client-smoke-flags.ts",
-    "smoke:permissions": "bun src/client-smoke-permissions.ts",
-    "smoke:image-in": "bun src/client-smoke-image-in.ts",
-    "smoke:image-out": "bun src/client-smoke-image-out.ts",
-    "smoke:robustness": "bun src/client-smoke-robustness.ts",
-    "smoke:all": "bun test src/lib && bun src/client-smoke.ts && bun src/client-smoke-flags.ts && bun src/client-smoke-permissions.ts && bun src/client-smoke-image-in.ts && bun src/client-smoke-image-out.ts && bun src/client-smoke-robustness.ts"
+    "test:args": "bun tests/test-agy-args.ts",
+    "smoke": "bun tests/smoke/smoke-basic.ts",
+    "smoke:flags": "bun tests/smoke/smoke-flags.ts",
+    "smoke:permissions": "bun tests/smoke/smoke-permissions.ts",
+    "smoke:image-in": "bun tests/smoke/smoke-image-in.ts",
+    "smoke:image-out": "bun tests/smoke/smoke-image-out.ts",
+    "smoke:robustness": "bun tests/smoke/smoke-robustness.ts",
+    "smoke:all": "bun test src/lib && bun tests/test-agy-args.ts && bun tests/smoke/smoke-basic.ts && bun tests/smoke/smoke-flags.ts && bun tests/smoke/smoke-permissions.ts && bun tests/smoke/smoke-image-in.ts && bun tests/smoke/smoke-image-out.ts && bun tests/smoke/smoke-robustness.ts"
   },
-  "engines": {
-    "bun": ">=1.1.0"
+  "keywords": [
+    "antigravity",
+    "acp",
+    "agent-client-protocol",
+    "google-gemini",
+    "agent",
+    "zed",
+    "cursor"
+  ],
+  "author": "yitom",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yitom486/agy-acp-map"
   },
-  "license": "UNLICENSED",
-  "private": true,
+  "license": "MIT",
   "devDependencies": {
     "bun-types": "^1.4.2"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "^1.4.0"
   }
 }

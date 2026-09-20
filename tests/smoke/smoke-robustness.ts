@@ -12,22 +12,17 @@ import { createInterface } from 'node:readline';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
+import { ensurePath, DEFAULT_SERVER_PATH } from './helpers.ts';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SERVER = path.join(__dirname, 'server.ts');
-const CWD = path.join(__dirname, '..', 'smoke-workdir-robustness');
-const OUT = path.join(__dirname, '..', 'SMOKE_BUN_TS_ROBUSTNESS.md');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const ROOT = path.resolve(__dirname, '../..');
+const SERVER = DEFAULT_SERVER_PATH;
+const CWD = path.join(ROOT, 'smoke-workdir-robustness');
+const OUT = path.join(ROOT, 'SMOKE_BUN_TS_ROBUSTNESS.md');
 const TIMEOUT_MS = Number(process.env.SMOKE_TIMEOUT_MS || 240000);
 
 fs.mkdirSync(CWD, { recursive: true });
-
-function ensurePath() {
-  const extra = '/home/box/.local/bin';
-  const p = process.env.PATH || '';
-  if (!p.split(path.delimiter).includes(extra)) {
-    process.env.PATH = `${extra}${path.delimiter}${p}`;
-  }
-}
 ensurePath();
 
 const child = spawn(process.execPath, [SERVER], {
@@ -37,7 +32,7 @@ const child = spawn(process.execPath, [SERVER], {
     AGY_ACP_SKIP_PERMISSIONS: process.env.AGY_ACP_SKIP_PERMISSIONS || '1',
     AGY_ACP_SAFETY: process.env.AGY_ACP_SAFETY || 'autonomous',
   },
-  cwd: __dirname,
+  cwd: ROOT,
 });
 
 let nextId = 1;
@@ -57,13 +52,13 @@ function log(tag: string, obj: unknown) {
 
 function send(method: string, params?: unknown) {
   const id = nextId++;
-  child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
+  child.stdin!.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
   log('→', { id, method, params });
   return new Promise((resolve, reject) => pending.set(id, { resolve, reject }));
 }
 
 function notify(method: string, params?: unknown) {
-  child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method, params }) + '\n');
+  child.stdin!.write(JSON.stringify({ jsonrpc: '2.0', method, params }) + '\n');
   log('notify→', { method, params });
 }
 
@@ -346,7 +341,7 @@ async function run() {
           l.includes('definitely-not-a-real-model-xyz-999'),
       );
       results.invalidModel = {
-        pass: spawnSawModel || true, // threw = loud failure
+        pass: spawnSawModel || true,
         spawnSawModel,
         error: String((err as Error)?.message || err),
         note: 'Prompt/spawn threw — loud failure observed.',

@@ -31,8 +31,10 @@ describe('AgyProcessManager generation', () => {
     const gen1 = mgr.currentGeneration;
     expect(gen1).toBe(1);
 
-    // Wait briefly for the line
-    await new Promise((r) => setTimeout(r, 200));
+    // Wait for the line
+    for (let i = 0; i < 30 && !seen.includes(1); i++) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
     expect(seen).toContain(1);
 
     // Kill and respawn — old generation events must be ignored
@@ -51,12 +53,14 @@ describe('AgyProcessManager generation', () => {
       onExit: () => {},
     });
     expect(mgr.currentGeneration).toBe(2);
-    await new Promise((r) => setTimeout(r, 200));
+    for (let i = 0; i < 30 && seen.filter((g) => g === 2).length === 0; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
     expect(seen.filter((g) => g === 2).length).toBeGreaterThanOrEqual(1);
     // No events with gen=1 after respawn should arrive (stale filtered)
     await mgr.kill({ awaitExit: true, graceMs: 500 });
     expect(mgr.isAlive()).toBe(false);
-  });
+  }, 15000);
 
   test('onError fires for missing binary without unhandled rejection', async () => {
     const mgr = new AgyProcessManager();

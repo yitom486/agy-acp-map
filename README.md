@@ -45,17 +45,18 @@ ACP Client  ←stdio JSON-RPC NDJSON→  src/server.ts  ←stdin/stdout stream-j
 export PATH="/home/box/.local/bin:$PATH"
 cd /workspace/agy-acp-map
 
-bun src/server.ts                 # ACP stdio agent
-bun test                          # unit tests
-bun src/test-agy-args.ts          # legacy args script
+bun src/server.ts                 # Minimal ACP stdio agent (zero-runtime-dep)
+bun src/sdk-server.ts             # Official @agentclientprotocol/sdk stdio agent
+bun test                          # unit tests (src/lib/*.test.ts)
+bun tests/test-agy-args.ts        # CLI args unit test
 
 # Live smokes (need logged-in agy)
-bun src/client-smoke.ts           # pong
-bun src/client-smoke-permissions.ts
-bun src/client-smoke-image-in.ts
-bun src/client-smoke-image-out.ts   # may take longer
-bun src/client-smoke-flags.ts       # model / --conversation / sandbox / json-schema
-bun src/client-smoke-robustness.ts  # cancel / empty / bad model / set_config / list
+bun tests/smoke/smoke-basic.ts
+bun tests/smoke/smoke-permissions.ts
+bun tests/smoke/smoke-image-in.ts
+bun tests/smoke/smoke-image-out.ts   # may take longer
+bun tests/smoke/smoke-flags.ts       # model / --conversation / sandbox / json-schema
+bun tests/smoke/smoke-robustness.ts  # cancel / empty / bad model / set_config / list
 
 bun run smoke:all                 # units + full live matrix
 ```
@@ -226,21 +227,17 @@ Without skip-permissions, agy may stderr e.g.:
 
 | File | Role |
 |------|------|
-| `src/server.ts` | ACP v2 stdio server |
-| `src/lib/agy-process.ts` | Child spawn/kill/generation supervision |
-| `src/lib/agy-args.ts` | `buildAgyArgs` / safety / printTimeout / slash |
-| `src/lib/agy-discovery.ts` | `agy models` / `agy agents` parsers |
-| `src/lib/map-agy-to-acp.ts` | agy event → ACP updates |
-| `src/lib/prompt-normalize.ts` | ContentBlock → text + staging + size/cleanup |
-| `src/lib/rich-content.ts` | Image path extract / ACP image block |
-| `src/lib/path-allowlist.ts` | Session cwd/staging/add-dir allowlist |
-| `src/lib/soft-deny.ts` | Stderr soft-deny parser |
+| `src/server.ts` | Minimal ACP v2 stdio server (zero-runtime-dep) |
+| `src/agent-sdk.ts` | Official `@agentclientprotocol/sdk` Agent App |
+| `src/sdk-server.ts` | Official ACP SDK stdio server entry |
+| `tests/test-agy-args.ts` / `bun test` | Unit tests |
+| `tests/smoke/*.ts` | Live smoke tests (basic, flags, perms, images, robust) |
+| `tests/fixtures/tiny.png` | Blue “HI” PNG for image-in |
 | `src/lib/session-store.ts` | Disk session id/config index (atomic JSON) |
 | `docs/AGY_ACP_MAP_ANALYSIS.zh-CN.md` | Architecture analysis (kept) |
 | `src/test-agy-args.ts / `bun test`` | Unit tests (no live agy) |
 | `src/client-smoke*.ts` | Smokes |
 | `fixtures/tiny.png` | Blue “HI” PNG for image-in |
-| `SMOKE_*.md` | Smoke reports |
 
 
 ## Opinion / 看法（v0.1.2）

@@ -31,19 +31,19 @@ import {
   mapAgyEvent,
   buildAgyUserMessage,
   richRootsFromSession,
-} from './lib/map-agy-to-acp.ts';
+} from '../src/lib/map-agy-to-acp.ts';
 import {
   normalizePromptBlocksSync,
   STAGING_DIRNAME,
   cleanupStaging,
   cleanupSessionStaging,
-} from './lib/prompt-normalize.ts';
+} from '../src/lib/prompt-normalize.ts';
 import {
   parseSoftDeny,
   parseSoftDenyFromEvent,
   mergeSoftDenies,
   formatSoftDenyMessage,
-} from './lib/soft-deny.ts';
+} from '../src/lib/soft-deny.ts';
 import {
   extractLaunchConfig,
   applyConfigOption,
@@ -53,15 +53,15 @@ import {
   resolveDisableSlashCommands,
   resolvePrintTimeout,
   SAFETY_TIERS,
-} from './lib/agy-args.ts';
-import { discoverAgyCatalog } from './lib/agy-discovery.ts';
-import { AgyProcessManager } from './lib/agy-process.ts';
+} from '../src/lib/agy-args.ts';
+import { discoverAgyCatalog } from '../src/lib/agy-discovery.ts';
+import { AgyProcessManager } from '../src/lib/agy-process.ts';
 import {
   SessionStore,
   sessionToRecord,
   recordLaunchFields,
   deleteOnCloseEnabled,
-} from './lib/session-store.ts';
+} from '../src/lib/session-store.ts';
 
 const AGENT_INFO = {
   name: 'agy-acp',

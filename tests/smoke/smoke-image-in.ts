@@ -8,23 +8,18 @@ import { createInterface } from 'node:readline';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
+import { ensurePath, DEFAULT_SERVER_PATH, FIXTURES_DIR } from './helpers.ts';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SERVER = path.join(__dirname, 'server.ts');
-const PNG = path.join(__dirname, '..', 'fixtures', 'tiny.png');
-const OUT = path.join(__dirname, '..', 'SMOKE_IMAGE_IN.md');
-const CWD = path.join(__dirname, '..', 'smoke-workdir-image-in');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const ROOT = path.resolve(__dirname, '../..');
+const SERVER = DEFAULT_SERVER_PATH;
+const PNG = path.join(FIXTURES_DIR, 'tiny.png');
+const OUT = path.join(ROOT, 'SMOKE_IMAGE_IN.md');
+const CWD = path.join(ROOT, 'smoke-workdir-image-in');
 const TIMEOUT_MS = Number(process.env.SMOKE_TIMEOUT_MS || 180000);
 
 fs.mkdirSync(CWD, { recursive: true });
-
-function ensurePath() {
-  const extra = '/home/box/.local/bin';
-  const p = process.env.PATH || '';
-  if (!p.split(path.delimiter).includes(extra)) {
-    process.env.PATH = `${extra}${path.delimiter}${p}`;
-  }
-}
 ensurePath();
 
 const pngBuf = fs.readFileSync(PNG);
@@ -32,18 +27,22 @@ const b64 = pngBuf.toString('base64');
 
 const child = spawn(process.execPath, [SERVER], {
   stdio: ['pipe', 'pipe', 'pipe'],
-  env: { ...process.env, AGY_ACP_SKIP_PERMISSIONS: process.env.AGY_ACP_SKIP_PERMISSIONS || '1', AGY_ACP_SAFETY: process.env.AGY_ACP_SAFETY || 'autonomous' },
-  cwd: __dirname,
+  env: {
+    ...process.env,
+    AGY_ACP_SKIP_PERMISSIONS: process.env.AGY_ACP_SKIP_PERMISSIONS || '1',
+    AGY_ACP_SAFETY: process.env.AGY_ACP_SAFETY || 'autonomous',
+  },
+  cwd: ROOT,
 });
 
 let nextId = 1;
 const pending = new Map();
-const agentTexts = [];
-const toolTitles = [];
-const events = [];
+const agentTexts: string[] = [];
+const toolTitles: string[] = [];
+const events: any[] = [];
 let stagedNote = '';
 
-function send(method, params) {
+function send(method: string, params?: any): Promise<any> {
   const id = nextId++;
   child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
   return new Promise((resolve, reject) => pending.set(id, { resolve, reject }));
@@ -53,7 +52,7 @@ const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
 rl.on('line', (line) => {
   const t = line.trim();
   if (!t) return;
-  let msg;
+  let msg: any;
   try {
     msg = JSON.parse(t);
   } catch {
@@ -73,7 +72,7 @@ rl.on('line', (line) => {
       agentTexts.push(u.content.text);
     }
     if (u?.sessionUpdate === 'user_message') {
-      const text = u.content?.map?.((c) => c.text).join('\n') || JSON.stringify(u.content);
+      const text = u.content?.map?.((c: any) => c.text).join('\n') || JSON.stringify(u.content);
       if (/agy-acp-staging|attached an image/i.test(text)) stagedNote = text.slice(0, 500);
     }
     if (u?.sessionUpdate === 'tool_call_update' && u.title) toolTitles.push(u.title);
@@ -92,7 +91,7 @@ child.stderr.on('data', (buf) => {
 });
 
 let finished = false;
-function finish(stopReason) {
+function finish(stopReason: string) {
   if (finished) return;
   finished = true;
   clearTimeout(timer);
