@@ -105,7 +105,13 @@ function runAgySubcommand(
     };
     let child;
     try {
-      child = spawn(bin, args, {
+      let execBin = bin;
+      let execArgs = args;
+      if (/\.(js|cjs|mjs|ts)$/i.test(bin)) {
+        execBin = process.execPath;
+        execArgs = [bin, ...args];
+      }
+      child = spawn(execBin, execArgs, {
         stdio: ['ignore', 'pipe', 'pipe'],
         env: { ...process.env },
         windowsHide: true,

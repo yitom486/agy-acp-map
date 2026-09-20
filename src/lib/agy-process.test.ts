@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import path from 'node:path';
 import { spawn } from 'node:child_process';
 import {
   AgyProcessManager,
@@ -87,6 +88,63 @@ describe('AgyProcessManager generation', () => {
   test('writeLine throws when not writable', () => {
     const mgr = new AgyProcessManager();
     expect(() => mgr.writeLine('hi')).toThrow();
+  });
+
+  test('setCallbacks dynamically routes subsequent turns to new event callbacks on the same live child process', async () => {
+    const mgr = new AgyProcessManager();
+    const turn1Events: any[] = [];
+    const turn2Events: any[] = [];
+
+    const mockCliPath = path.resolve(import.meta.dir, '../../tests/fixtures/mock-agy-cli.cjs');
+
+    await mgr.spawn({
+      bin: process.execPath,
+      args: [mockCliPath],
+      cwd: process.cwd(),
+      onEvent: (obj) => {
+        turn1Events.push(obj);
+      },
+      onError: () => {},
+      onExit: () => {},
+    });
+
+    expect(mgr.isAlive()).toBe(true);
+    expect(mgr.isWritable()).toBe(true);
+
+    // Turn 1
+    mgr.writeLine(JSON.stringify({
+      event: 'user',
+      message: { role: 'user', content: [{ type: 'text', text: 'Hello Turn 1' }] },
+    }));
+    for (let i = 0; i < 30 && turn1Events.length === 0; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(turn1Events.length).toBeGreaterThanOrEqual(1);
+
+    // Dynamically switch callbacks for Turn 2
+    const turn1CountBefore = turn1Events.length;
+    mgr.setCallbacks({
+      onEvent: (obj) => {
+        turn2Events.push(obj);
+      },
+      onError: () => {},
+      onExit: () => {},
+    });
+
+    // Turn 2
+    mgr.writeLine(JSON.stringify({
+      event: 'user',
+      message: { role: 'user', content: [{ type: 'text', text: 'Hello Turn 2' }] },
+    }));
+    for (let i = 0; i < 30 && turn2Events.length === 0; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(turn2Events.length).toBeGreaterThanOrEqual(1);
+    // Ensure Turn 1 callback received no further events
+    expect(turn1Events.length).toBe(turn1CountBefore);
+
+    await mgr.kill({ awaitExit: true, graceMs: 500 });
+    expect(mgr.isAlive()).toBe(false);
   });
 });
 

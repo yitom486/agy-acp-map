@@ -625,12 +625,19 @@ export class AgyAcpService {
         }
       }
 
+      let execBin = bin;
+      let execArgs = args;
+      if (/\.(js|cjs|mjs|ts)$/i.test(bin)) {
+        execBin = process.execPath;
+        execArgs = [bin, ...args];
+      }
+
       (async () => {
         try {
           if (!session.proc.isWritable()) {
             await session.proc.spawn({
-              bin,
-              args,
+              bin: execBin,
+              args: execArgs,
               cwd: session.cwd,
               onEvent,
               onError,

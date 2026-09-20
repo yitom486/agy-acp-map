@@ -89,4 +89,45 @@ describe('AgyAcpService & SDK Agent', () => {
     expect(dual).toBeDefined();
     expect(typeof dual.connect).toBe('function');
   });
+
+  test('promptSession executes multi-turn consecutive prompts on same session cleanly without hanging (offline simulation)', async () => {
+    const originalBin = process.env.AGY_BIN;
+    const mockCliPath = path.resolve(import.meta.dir, '../../tests/fixtures/mock-agy-cli.cjs');
+    process.env.AGY_BIN = mockCliPath;
+
+    const service = new AgyAcpService();
+    const cwd = path.resolve(import.meta.dir, '../../');
+    const { sessionId } = await service.newSession({ cwd });
+
+    try {
+      // Turn 1
+      const turn1Chunks: string[] = [];
+      const res1 = await service.promptSession({
+        sessionId,
+        prompt: [{ type: 'text', text: 'First user prompt' }],
+      }, (update: any) => {
+        if (update.sessionUpdate === 'agent_message_chunk') {
+          turn1Chunks.push(update.content?.text || '');
+        }
+      });
+      expect(res1.stopReason).toBe('end_turn');
+      expect(turn1Chunks.join('')).toBe('Mock response for [First user prompt] (turn 1)');
+
+      // Turn 2 on the SAME session (validates that setCallbacks reroutes to Turn 2 and does not hang!)
+      const turn2Chunks: string[] = [];
+      const res2 = await service.promptSession({
+        sessionId,
+        prompt: [{ type: 'text', text: 'Second user prompt' }],
+      }, (update: any) => {
+        if (update.sessionUpdate === 'agent_message_chunk') {
+          turn2Chunks.push(update.content?.text || '');
+        }
+      });
+      expect(res2.stopReason).toBe('end_turn');
+      expect(turn2Chunks.join('')).toBe('Mock response for [Second user prompt] (turn 2)');
+    } finally {
+      await service.closeSession({ sessionId });
+      process.env.AGY_BIN = originalBin;
+    }
+  });
 });
