@@ -352,6 +352,7 @@ export class AgyAcpService {
       applyConfigOption(session as any, configId, value);
       session.updatedAt = new Date().toISOString();
       this.persistSession(session);
+      await session.proc.kill();
     }
 
     const discovery = await (this.catalogPromise || discoverAgyCatalog());
@@ -631,6 +632,13 @@ export class AgyAcpService {
               bin,
               args,
               cwd: session.cwd,
+              onEvent,
+              onError,
+              onStderr,
+              onExit,
+            });
+          } else {
+            session.proc.setCallbacks({
               onEvent,
               onError,
               onStderr,

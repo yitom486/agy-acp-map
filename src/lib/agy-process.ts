@@ -35,6 +35,7 @@ export class AgyProcessManager {
   private child: ChildProcess | null = null;
   private generation = 0;
   private killInFlight: Promise<void> | null = null;
+  private callbacks: AgyProcessCallbacks | null = null;
 
   get currentChild(): ChildProcess | null {
     return this.child;
@@ -54,6 +55,13 @@ export class AgyProcessManager {
   }
 
   /**
+   * Dynamically update callbacks for ongoing process (e.g. multi-turn sessions).
+   */
+  setCallbacks(callbacks: AgyProcessCallbacks): void {
+    this.callbacks = callbacks;
+  }
+
+  /**
    * Kill any existing child (await exit), then spawn a new one with a fresh generation.
    */
   async spawn(opts: SpawnAgyOptions): Promise<{ child: ChildProcess; generation: number }> {
@@ -62,6 +70,7 @@ export class AgyProcessManager {
     this.generation += 1;
     const gen = opts.generation ?? this.generation;
     this.generation = gen;
+    this.callbacks = opts;
 
     const child = spawn(opts.bin, opts.args, {
       cwd: opts.cwd,
@@ -81,15 +90,15 @@ export class AgyProcessManager {
       try {
         obj = JSON.parse(t);
       } catch {
-        opts.onBadLine?.(t, gen);
+        this.callbacks?.onBadLine?.(t, gen);
         return;
       }
-      opts.onEvent(obj, gen);
+      this.callbacks?.onEvent(obj, gen);
     });
 
     child.stderr?.on('data', (buf: Buffer | string) => {
       if (gen !== this.generation || this.child !== child) return;
-      opts.onStderr?.(buf.toString(), gen);
+      this.callbacks?.onStderr?.(buf.toString(), gen);
     });
 
     child.stdin?.on('error', () => {
@@ -99,7 +108,7 @@ export class AgyProcessManager {
     child.on('error', (err: Error) => {
       // Always notify for this generation so callers can idle/error even if
       // another spawn already replaced child (shouldn't happen mid-error).
-      opts.onError?.(err, gen);
+      this.callbacks?.onError?.(err, gen);
       if (this.child === child) {
         this.child = null;
       }
@@ -110,7 +119,7 @@ export class AgyProcessManager {
       if (this.child === child) {
         this.child = null;
       }
-      opts.onExit?.(code, signal, gen);
+      this.callbacks?.onExit?.(code, signal, gen);
     });
 
     return { child, generation: gen };
