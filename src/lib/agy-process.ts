@@ -58,6 +58,7 @@ export class AgyProcessManager {
    * Dynamically update callbacks for ongoing process (e.g. multi-turn sessions).
    */
   setCallbacks(callbacks: AgyProcessCallbacks): void {
+    console.log(`[ACP-PROC] setCallbacks: event routing switched to new turn (gen: ${this.generation}, pid: ${this.child?.pid})`);
     this.callbacks = callbacks;
   }
 
@@ -72,6 +73,7 @@ export class AgyProcessManager {
     this.generation = gen;
     this.callbacks = opts;
 
+    console.log(`[ACP-PROC] spawn: launching agy subprocess (gen: ${gen}) binary: ${opts.bin}`);
     const child = spawn(opts.bin, opts.args, {
       cwd: opts.cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -79,6 +81,7 @@ export class AgyProcessManager {
       windowsHide: true,
     });
 
+    console.log(`[ACP-PROC] spawn: subprocess started with PID: ${child.pid} (gen: ${gen})`);
     this.child = child;
 
     const rl = createInterface({ input: child.stdout!, crlfDelay: Infinity });
@@ -86,10 +89,12 @@ export class AgyProcessManager {
       if (gen !== this.generation || this.child !== child) return;
       const t = line.trim();
       if (!t) return;
+      console.log(`[ACP-PROC] stdout line received (pid: ${child.pid}, gen: ${gen}): ${t.slice(0, 160)}`);
       let obj: unknown;
       try {
         obj = JSON.parse(t);
       } catch {
+        console.warn(`[ACP-PROC] stdout bad non-JSON line: ${t.slice(0, 100)}`);
         this.callbacks?.onBadLine?.(t, gen);
         return;
       }
@@ -98,6 +103,7 @@ export class AgyProcessManager {
 
     child.stderr?.on('data', (buf: Buffer | string) => {
       if (gen !== this.generation || this.child !== child) return;
+      console.warn(`[ACP-PROC] stderr data (pid: ${child.pid}, gen: ${gen}): ${buf.toString().slice(0, 200)}`);
       this.callbacks?.onStderr?.(buf.toString(), gen);
     });
 
@@ -106,8 +112,7 @@ export class AgyProcessManager {
     });
 
     child.on('error', (err: Error) => {
-      // Always notify for this generation so callers can idle/error even if
-      // another spawn already replaced child (shouldn't happen mid-error).
+      console.error(`[ACP-PROC] child error (pid: ${child.pid}, gen: ${gen}):`, err.message);
       this.callbacks?.onError?.(err, gen);
       if (this.child === child) {
         this.child = null;
@@ -115,6 +120,7 @@ export class AgyProcessManager {
     });
 
     child.on('exit', (code, signal) => {
+      console.log(`[ACP-PROC] child exited (pid: ${child.pid}, gen: ${gen}, code: ${code}, signal: ${signal})`);
       rl.close();
       if (this.child === child) {
         this.child = null;
@@ -171,12 +177,14 @@ export class AgyProcessManager {
   /** Write one NDJSON line to the current child's stdin. */
   writeLine(line: string): void {
     if (!this.isWritable()) {
+      console.error(`[ACP-PROC] writeLine FAILED: child stdin not writable (pid: ${this.child?.pid})`);
       throw new Error('agy child stdin not writable');
     }
     try {
+      console.log(`[ACP-PROC] writeLine (stdin to pid: ${this.child?.pid}): ${line.slice(0, 160)}`);
       this.child!.stdin!.write(line.endsWith('\n') ? line : line + '\n');
-    } catch {
-      // safe swallow
+    } catch (err: any) {
+      console.error(`[ACP-PROC] writeLine error:`, err?.message);
     }
   }
 }
