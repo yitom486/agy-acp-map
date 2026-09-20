@@ -28,7 +28,7 @@ ensurePath();
 
 const child = spawn(process.execPath, [SERVER], {
   stdio: ['pipe', 'pipe', 'pipe'],
-  env: { ...process.env, AGY_ACP_SKIP_PERMISSIONS: '1' },
+  env: { ...process.env, AGY_ACP_SKIP_PERMISSIONS: process.env.AGY_ACP_SKIP_PERMISSIONS || '1', AGY_ACP_SAFETY: process.env.AGY_ACP_SAFETY || 'autonomous' },
   cwd: __dirname,
 });
 

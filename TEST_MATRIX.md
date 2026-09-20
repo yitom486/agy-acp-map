@@ -1,32 +1,29 @@
-# TEST_MATRIX — agy-acp-map v0.4.0 (Bun + TypeScript)
+# TEST_MATRIX — agy-acp-map v0.4.1 (Bun + TypeScript)
 
-Honest pass/fail after migration. Live tests need logged-in `agy` on PATH.
+Honest pass/fail. Live tests need logged-in `agy` on PATH.
 
 ## Unit (no live agy)
 
 | ID | Coverage | How | Result |
 |----|----------|-----|--------|
-| U1 | `buildAgyArgs` / `extractLaunchConfig` / `applyConfigOption` | `bun test src/lib/agy-args.test.ts` | PASS |
-| U2 | `mapAgyEvent` init/text_delta/tool/result + sample ndjson | `bun test src/lib/map-agy-to-acp.test.ts` | PASS |
+| U1 | `buildAgyArgs` / safety / slash / printTimeout / `extractLaunchConfig` / `applyConfigOption` | `bun test src/lib/agy-args.test.ts` | PASS |
+| U2 | `mapAgyEvent` init/text_delta/tool/result + **structured_output** + sample ndjson | `bun test src/lib/map-agy-to-acp.test.ts` | PASS |
 | U3 | `parseSoftDeny` / FromEvent / merge / format | `bun test src/lib/soft-deny.test.ts` | PASS |
 | U4 | `normalizePromptBlocksSync` text + image staging (tmpdir) | `bun test src/lib/prompt-normalize.test.ts` | PASS |
 | U5 | `extractImagePaths` + `fileToAcpImageBlock` + rich tool content | `bun test src/lib/rich-content.test.ts` | PASS |
-| U6 | Legacy script parity | `bun src/test-agy-args.ts` | PASS |
+| U6 | `parseAgyModelsStdout` / `parseAgyAgentsStdout` fixtures | `bun test src/lib/agy-discovery.test.ts` | PASS |
+| U7 | Legacy script parity | `bun src/test-agy-args.ts` | PASS |
 
 ## Integration / smoke (live agy)
 
-| ID | Coverage | How | Result |
-|----|----------|-----|--------|
-| S1 | pong end-to-end | `bun src/client-smoke.ts` | PASS |
-| S2 | model / conversation respawn / sandbox / json-schema | `bun src/client-smoke-flags.ts` | PASS |
-| S3 | soft-deny (skip permissions=0) | `bun src/client-smoke-permissions.ts` | PASS |
-| S4 | image input degrade-to-files | `bun src/client-smoke-image-in.ts` | PASS |
-| S5 | image output generate + ACP image | `bun src/client-smoke-image-out.ts` | PASS |
-| S6a | empty prompt → `-32602` | robustness | PASS |
-| S6b | cancel mid-turn → next prompt works | robustness | PASS |
-| S6c | invalid model → loud agy failure (not silent) | robustness | PASS |
-| S6d | set_config_option busy → `-32002`; idle → next spawn flag | robustness | PASS |
-| S6e | session/list shows conversationId after turn | robustness | PASS |
+| ID | Coverage | How | Notes / Result |
+|----|----------|-----|----------------|
+| S1 | pong end-to-end (**safe** default) | `bun src/client-smoke.ts` | no skip env |
+| S2 | model / conversation / sandbox / json-schema | `bun src/client-smoke-flags.ts` | sets `AGY_ACP_SAFETY=autonomous` |
+| S3 | soft-deny (skip=0 / safe) | `bun src/client-smoke-permissions.ts` | PASS path |
+| S4 | image input degrade-to-files | `bun src/client-smoke-image-in.ts` | autonomous |
+| S5 | image output generate + ACP image | `bun src/client-smoke-image-out.ts` | autonomous |
+| S6 | cancel / empty / bad model / set_config / list | `bun src/client-smoke-robustness.ts` | autonomous |
 
 ## Package scripts
 
@@ -36,8 +33,14 @@ Honest pass/fail after migration. Live tests need logged-in `agy` on PATH.
 | `bun run smoke:all` | Units + all live smokes including robustness |
 | `bun run start` | `bun src/server.ts` stdio agent |
 
-## Known / documented behaviors
+## v0.4.1 behavior notes
 
-- Invalid `model` is **not** validated at `session/new`; failure is **loud at spawn** (agy stderr + agent text / idle).
-- Soft-deny is advisory agent_message (no ACP permission UI round-trip).
-- Image input always stages files; depends on agy `view_file` / vision.
+- Default **safe**: no `--dangerously-skip-permissions`; soft-deny scrape remains useful.
+- Always passes `--disable-slash-commands` unless `AGY_ACP_DISABLE_SLASH_COMMANDS=0` / `disableSlashCommands: false`.
+- `--print-timeout` configurable (default `0`).
+- `initialize` discovers `availableModels` / `availableAgents` (best-effort).
+- `result.structured_output` → fenced JSON `agent_message_chunk`.
+
+## Live quota note
+
+If `agy` returns `RESOURCE_EXHAUSTED` / 429, treat spawn-flag verification + unit tests as the authority for launch-flag / structured_output / discovery changes; re-run live smokes after quota reset.

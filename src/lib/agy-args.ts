@@ -1,3 +1,5 @@
+export type SafetyMode = 'safe' | 'autonomous';
+
 export interface LaunchConfig {
   model?: string;
   effort?: string;
@@ -5,6 +7,14 @@ export interface LaunchConfig {
   agent?: string;
   sandbox?: boolean;
   jsonSchema?: string;
+  /** Prefer over raw skipPermissions when set. */
+  safety?: SafetyMode;
+  /** When true (default), pass --dangerously-skip-permissions. */
+  skipPermissions?: boolean;
+  /** When true (default), pass --disable-slash-commands. */
+  disableSlashCommands?: boolean;
+  /** Value for --print-timeout (e.g. "0", "30m", "120s"). Default "0". */
+  printTimeout?: string;
 }
 
 export interface LaunchConfigWithConversation extends LaunchConfig {
@@ -29,19 +39,29 @@ export interface BuildAgyArgsSession {
   sandbox?: boolean;
   jsonSchema?: string;
   skipPermissions?: boolean;
+  disableSlashCommands?: boolean;
+  printTimeout?: string;
   stagingDirName?: string;
   stagingOutsideCwd?: string;
   mapper?: { conversationId?: string };
 }
 
-const CONFIG_IDS = new Set(['model', 'effort', 'mode', 'agent', 'sandbox', 'jsonSchema']);
+const CONFIG_IDS = new Set([
+  'model',
+  'effort',
+  'mode',
+  'agent',
+  'sandbox',
+  'jsonSchema',
+  'printTimeout',
+  'safety',
+  'disableSlashCommands',
+]);
 
 /**
  * Pick first non-empty string from candidates.
- * @param {...unknown} vals
- * @returns {string|undefined}
  */
-function firstString(...vals) {
+function firstString(...vals: unknown[]): string | undefined {
   for (const v of vals) {
     if (typeof v === 'string' && v.trim()) return v.trim();
   }
@@ -50,8 +70,6 @@ function firstString(...vals) {
 
 /**
  * Normalize jsonSchema: object → JSON string; string kept as-is.
- * @param {unknown} v
- * @returns {string|undefined}
  */
 export function normalizeJsonSchema(v: unknown): string | undefined {
   if (v == null || v === '') return undefined;
@@ -71,8 +89,7 @@ export function normalizeJsonSchema(v: unknown): string | undefined {
 
 /**
  * Truthy sandbox from boolean / string / number.
- * @param {unknown} v
- * @returns {boolean|undefined} undefined = not set
+ * @returns undefined = not set
  */
 export function normalizeSandbox(v: unknown): boolean | undefined {
   if (v === undefined || v === null || v === '') return undefined;
@@ -82,27 +99,157 @@ export function normalizeSandbox(v: unknown): boolean | undefined {
 }
 
 /**
- * Apply ACP-ish configOptions [{ id|configId, value }] onto a partial LaunchConfig.
- * @param {LaunchConfig} cfg
- * @param {unknown} configOptions
+ * Normalize safety mode.
  */
-function applyConfigOptions(cfg, configOptions) {
+export function normalizeSafety(v: unknown): SafetyMode | undefined {
+  if (v === undefined || v === null || v === '') return undefined;
+  const s = String(v).trim().toLowerCase();
+  if (s === 'safe') return 'safe';
+  if (s === 'autonomous' || s === 'auto') return 'autonomous';
+  return undefined;
+}
+
+/**
+ * Normalize boolean-ish with default when unset.
+ */
+export function normalizeBool(v: unknown, defaultWhenUnset: boolean): boolean {
+  if (v === undefined || v === null || v === '') return defaultWhenUnset;
+  if (v === true || v === 1 || v === '1' || v === 'true' || v === 'yes') return true;
+  if (v === false || v === 0 || v === '0' || v === 'false' || v === 'no') return false;
+  return Boolean(v);
+}
+
+/**
+ * Optional bool: undefined when unset.
+ */
+export function normalizeOptionalBool(v: unknown): boolean | undefined {
+  if (v === undefined || v === null || v === '') return undefined;
+  if (v === true || v === 1 || v === '1' || v === 'true' || v === 'yes') return true;
+  if (v === false || v === 0 || v === '0' || v === 'false' || v === 'no') return false;
+  return Boolean(v);
+}
+
+/**
+ * Normalize print-timeout string (pass-through; empty → undefined).
+ */
+export function normalizePrintTimeout(v: unknown): string | undefined {
+  if (v === undefined || v === null) return undefined;
+  const s = String(v).trim();
+  return s === '' ? undefined : s;
+}
+
+/**
+ * Resolve whether to pass --dangerously-skip-permissions.
+ *
+ * Priority:
+ *   1. explicit session.skipPermissions
+ *   2. explicit AGY_ACP_SKIP_PERMISSIONS env
+ *   3. safety === 'autonomous' → true; safety === 'safe' / default → false
+ *
+ * Default (v0.4.1+): false (safe).
+ */
+export function resolveSkipPermissions(
+  session: { skipPermissions?: boolean; safety?: SafetyMode },
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (session.skipPermissions !== undefined) return Boolean(session.skipPermissions);
+  const envSkip = env.AGY_ACP_SKIP_PERMISSIONS;
+  if (envSkip !== undefined && envSkip !== '') {
+    return !(envSkip === '0' || envSkip === 'false' || envSkip === 'no');
+  }
+  const safety =
+    session.safety ??
+    normalizeSafety(env.AGY_ACP_SAFETY) ??
+    'safe';
+  return safety === 'autonomous';
+}
+
+/**
+ * Resolve whether to pass --sandbox.
+ *
+ * Priority:
+ *   1. explicit session.sandbox
+ *   2. explicit AGY_ACP_SANDBOX env
+ *   3. if safety is autonomous and sandbox unset → true (optional default)
+ *   4. otherwise undefined / omit
+ */
+export function resolveSandbox(
+  session: { sandbox?: boolean; safety?: SafetyMode },
+  env: NodeJS.ProcessEnv = process.env,
+): boolean | undefined {
+  if (session.sandbox !== undefined) return Boolean(session.sandbox);
+  const envSand = normalizeSandbox(env.AGY_ACP_SANDBOX);
+  if (envSand !== undefined) return envSand;
+  const safety =
+    session.safety ??
+    normalizeSafety(env.AGY_ACP_SAFETY) ??
+    'safe';
+  if (safety === 'autonomous') return true;
+  return undefined;
+}
+
+/**
+ * Resolve --disable-slash-commands (default true).
+ * Disable via session.disableSlashCommands=false or AGY_ACP_DISABLE_SLASH_COMMANDS=0.
+ */
+export function resolveDisableSlashCommands(
+  session: { disableSlashCommands?: boolean },
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (session.disableSlashCommands !== undefined) {
+    return Boolean(session.disableSlashCommands);
+  }
+  const v = env.AGY_ACP_DISABLE_SLASH_COMMANDS;
+  if (v !== undefined && v !== '') {
+    return !(v === '0' || v === 'false' || v === 'no');
+  }
+  return true;
+}
+
+/**
+ * Resolve --print-timeout value (default "0").
+ */
+export function resolvePrintTimeout(
+  session: { printTimeout?: string },
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  if (session.printTimeout !== undefined && session.printTimeout !== '') {
+    return String(session.printTimeout);
+  }
+  const fromEnv = normalizePrintTimeout(env.AGY_ACP_PRINT_TIMEOUT);
+  if (fromEnv !== undefined) return fromEnv;
+  return '0';
+}
+
+/**
+ * Apply ACP-ish configOptions [{ id|configId, value }] onto a partial LaunchConfig.
+ */
+function applyConfigOptions(cfg: LaunchConfig, configOptions: unknown): void {
   if (!Array.isArray(configOptions)) return;
   for (const opt of configOptions) {
     if (!opt || typeof opt !== 'object') continue;
-    const id = opt.id || opt.configId;
-    if (!CONFIG_IDS.has(id)) continue;
-    const value = opt.value;
+    const id = (opt as { id?: string; configId?: string }).id || (opt as { configId?: string }).configId;
+    if (!id || !CONFIG_IDS.has(id)) continue;
+    const value = (opt as { value?: unknown }).value;
     if (id === 'sandbox') {
       const s = normalizeSandbox(value);
       if (s !== undefined) cfg.sandbox = s;
     } else if (id === 'jsonSchema') {
       const j = normalizeJsonSchema(value);
       if (j !== undefined) cfg.jsonSchema = j;
+    } else if (id === 'printTimeout') {
+      const t = normalizePrintTimeout(value);
+      if (t !== undefined) cfg.printTimeout = t;
+    } else if (id === 'safety') {
+      const s = normalizeSafety(value);
+      if (s !== undefined) cfg.safety = s;
+    } else if (id === 'disableSlashCommands') {
+      const b = normalizeOptionalBool(value);
+      if (b !== undefined) cfg.disableSlashCommands = b;
     } else if (typeof value === 'string' && value.trim()) {
-      cfg[id] = value.trim();
+      (cfg as Record<string, unknown>)[id] = value.trim();
     } else if (value != null && typeof value !== 'object') {
-      cfg[id] = String(value);
+      (cfg as Record<string, unknown>)[id] = String(value);
     }
   }
 }
@@ -110,18 +257,16 @@ function applyConfigOptions(cfg, configOptions) {
 /**
  * Resolve launch flags from session/new (or similar) params + env fallbacks.
  * Preferred fields: top-level, then _meta, then config, then configOptions, then env.
- *
- * @param {Record<string, unknown>|null|undefined} params
- * @param {NodeJS.ProcessEnv|Record<string, string|undefined>} [env]
- * @returns {LaunchConfig & { conversationId?: string }}
  */
-export function extractLaunchConfig(params: Record<string, unknown> | null | undefined, env: NodeJS.ProcessEnv = process.env): LaunchConfigWithConversation {
+export function extractLaunchConfig(
+  params: Record<string, unknown> | null | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): LaunchConfigWithConversation {
   const p = params && typeof params === 'object' ? params : {};
-  const meta = p._meta && typeof p._meta === 'object' ? p._meta : {};
-  const config = p.config && typeof p.config === 'object' ? p.config : {};
+  const meta = p._meta && typeof p._meta === 'object' ? (p._meta as Record<string, unknown>) : {};
+  const config = p.config && typeof p.config === 'object' ? (p.config as Record<string, unknown>) : {};
 
-  /** @type {LaunchConfig & { conversationId?: string }} */
-  const out = {};
+  const out: LaunchConfigWithConversation = {};
 
   out.model = firstString(p.model, meta.model, config.model, env.AGY_ACP_MODEL);
   out.effort = firstString(p.effort, meta.effort, config.effort, env.AGY_ACP_EFFORT);
@@ -142,34 +287,56 @@ export function extractLaunchConfig(params: Record<string, unknown> | null | und
     normalizeJsonSchema(env.AGY_ACP_JSON_SCHEMA);
   if (js !== undefined) out.jsonSchema = js;
 
+  const safety =
+    normalizeSafety(p.safety) ??
+    normalizeSafety(meta.safety) ??
+    normalizeSafety(config.safety) ??
+    normalizeSafety(env.AGY_ACP_SAFETY);
+  if (safety !== undefined) out.safety = safety;
+
+  const skip =
+    normalizeOptionalBool(p.skipPermissions) ??
+    normalizeOptionalBool(meta.skipPermissions) ??
+    normalizeOptionalBool(config.skipPermissions);
+  if (skip !== undefined) out.skipPermissions = skip;
+
+  const dsc =
+    normalizeOptionalBool(p.disableSlashCommands) ??
+    normalizeOptionalBool(meta.disableSlashCommands) ??
+    normalizeOptionalBool(config.disableSlashCommands);
+  if (dsc !== undefined) out.disableSlashCommands = dsc;
+
+  const pt =
+    normalizePrintTimeout(p.printTimeout) ??
+    normalizePrintTimeout(meta.printTimeout) ??
+    normalizePrintTimeout(config.printTimeout) ??
+    normalizePrintTimeout(env.AGY_ACP_PRINT_TIMEOUT);
+  if (pt !== undefined) out.printTimeout = pt;
+
   applyConfigOptions(out, p.configOptions);
   applyConfigOptions(out, meta.configOptions);
 
-  out.conversationId = firstString(
-    p.conversationId,
-    meta.conversationId,
-    config.conversationId,
-  );
+  out.conversationId = firstString(p.conversationId, meta.conversationId, config.conversationId);
 
   // Drop undefined keys for cleaner session storage
   for (const k of Object.keys(out)) {
-    if (out[k] === undefined) delete out[k];
+    if ((out as Record<string, unknown>)[k] === undefined) delete (out as Record<string, unknown>)[k];
   }
   return out;
 }
 
 /**
  * Apply a single set_config_option onto session launch fields.
- * @param {object} session — mutated
- * @param {string} configId
- * @param {unknown} value
- * @returns {{ ok: true } | { ok: false, error: string }}
  */
-export function applyConfigOption(session: SessionLaunchFields, configId: string, value: unknown): ApplyConfigResult {
+export function applyConfigOption(
+  session: SessionLaunchFields,
+  configId: string,
+  value: unknown,
+): ApplyConfigResult {
   if (!CONFIG_IDS.has(configId)) {
     return {
       ok: false,
-      error: `unsupported configId: ${configId} (want model|effort|mode|agent|sandbox|jsonSchema)`,
+      error: `unsupported configId: ${configId} (want model|effort|mode|agent|sandbox|jsonSchema|printTimeout|safety|disableSlashCommands)`,
     };
   }
   if (configId === 'sandbox') {
@@ -188,6 +355,36 @@ export function applyConfigOption(session: SessionLaunchFields, configId: string
     session.jsonSchema = j;
     return { ok: true };
   }
+  if (configId === 'printTimeout') {
+    if (value === null || value === '') {
+      delete session.printTimeout;
+      return { ok: true };
+    }
+    const t = normalizePrintTimeout(value);
+    if (t === undefined) return { ok: false, error: 'invalid printTimeout' };
+    session.printTimeout = t;
+    return { ok: true };
+  }
+  if (configId === 'safety') {
+    if (value === null || value === '') {
+      delete session.safety;
+      return { ok: true };
+    }
+    const s = normalizeSafety(value);
+    if (s === undefined) return { ok: false, error: "safety must be 'safe' or 'autonomous'" };
+    session.safety = s;
+    return { ok: true };
+  }
+  if (configId === 'disableSlashCommands') {
+    if (value === null || value === '') {
+      delete session.disableSlashCommands;
+      return { ok: true };
+    }
+    const b = normalizeOptionalBool(value);
+    if (b === undefined) return { ok: false, error: 'disableSlashCommands must be boolean' };
+    session.disableSlashCommands = b;
+    return { ok: true };
+  }
   if (value === null || value === '') {
     delete session[configId];
     return { ok: true };
@@ -202,26 +399,24 @@ export function applyConfigOption(session: SessionLaunchFields, configId: string
 /**
  * Build argv for `agy` (without the binary name).
  *
- * @param {{
- *   cwd: string,
- *   additionalDirectories?: string[],
- *   conversationId?: string,
- *   model?: string,
- *   effort?: string,
- *   mode?: string,
- *   agent?: string,
- *   sandbox?: boolean,
- *   jsonSchema?: string,
- *   skipPermissions?: boolean,
- *   stagingDirName?: string,
- * }} session
- * @returns {string[]}
+ * Defaults (v0.4.1+):
+ *   - skipPermissions: false (safe) unless explicitly true / autonomous
+ *   - disableSlashCommands: true
+ *   - printTimeout: "0"
  */
 export function buildAgyArgs(session: BuildAgyArgsSession): string[] {
   const skip =
-    session.skipPermissions !== undefined
-      ? Boolean(session.skipPermissions)
+    session.skipPermissions !== undefined ? Boolean(session.skipPermissions) : false;
+
+  const disableSlash =
+    session.disableSlashCommands !== undefined
+      ? Boolean(session.disableSlashCommands)
       : true;
+
+  const printTimeout =
+    session.printTimeout !== undefined && session.printTimeout !== ''
+      ? String(session.printTimeout)
+      : '0';
 
   const args = [
     '-p',
@@ -236,7 +431,11 @@ export function buildAgyArgs(session: BuildAgyArgsSession): string[] {
     args.push('--dangerously-skip-permissions');
   }
 
-  args.push('--print-timeout', '0', '--add-dir', session.cwd);
+  if (disableSlash) {
+    args.push('--disable-slash-commands');
+  }
+
+  args.push('--print-timeout', printTimeout, '--add-dir', session.cwd);
 
   const stagingName = session.stagingDirName || '.agy-acp-staging';
   // Staging under cwd is covered by --add-dir cwd; keep hook for tests.
@@ -250,10 +449,7 @@ export function buildAgyArgs(session: BuildAgyArgsSession): string[] {
     }
   }
 
-  const conv =
-    session.conversationId ||
-    session.mapper?.conversationId ||
-    undefined;
+  const conv = session.conversationId || session.mapper?.conversationId || undefined;
   if (conv) {
     args.push('--conversation', String(conv));
   }

@@ -1,4 +1,4 @@
-# agy-acp-map — ACP v2 ↔ agy stream-json bridge (v0.4 · Bun + TypeScript)
+# agy-acp-map — ACP v2 ↔ agy stream-json bridge (v0.4.1 · Bun + TypeScript)
 
 **English** | **中文**
 
@@ -17,7 +17,8 @@ NDJSON（换行分隔 JSON / JSONL）是一种按行分帧的格式：每一行�
 ACP Client  ←stdio JSON-RPC NDJSON→  src/server.ts  ←stdin/stdout stream-json→  agy CLI
                                       │
                                       ├─ src/lib/map-agy-to-acp.ts
-                                      ├─ src/lib/agy-args.ts          (buildAgyArgs / launch flags)
+                                      ├─ src/lib/agy-args.ts          (buildAgyArgs / safety / printTimeout)
+                                      ├─ src/lib/agy-discovery.ts     (agy models / agents)
                                       ├─ src/lib/prompt-normalize.ts  (image → files)
                                       ├─ src/lib/rich-content.ts      (paths → ACP image)
                                       └─ src/lib/soft-deny.ts         (stderr soft-deny)
@@ -40,7 +41,7 @@ export PATH="/home/box/.local/bin:$PATH"
 cd /workspace/agy-acp-map
 
 bun src/server.ts                 # ACP stdio agent
-bun test                          # unit (37)
+bun test                          # unit tests
 bun src/test-agy-args.ts          # legacy args script
 
 # Live smokes (need logged-in agy)
@@ -57,7 +58,7 @@ bun run smoke:all                 # units + full live matrix
 **Windows:** install [Bun](https://bun.sh), put `agy` on `PATH`, then the same commands.
 
 
-## Launch flags / 启动参数 (v0.3)
+## Launch flags / 启动参数 (v0.4.1)
 
 Configure on **`session/new`** (preferred) and/or env fallbacks. Stored on the Session; every `spawnAgy` builds argv via `buildAgyArgs(session)`.
 
@@ -72,8 +73,11 @@ Configure on **`session/new`** (preferred) and/or env fallbacks. Stored on the S
 | `--sandbox` | `sandbox: true` | `AGY_ACP_SANDBOX=1` |
 | `--json-schema` | `jsonSchema` (string or object→stringify) | `AGY_ACP_JSON_SCHEMA` (string or path) |
 | `--conversation` | `conversationId` (resume / switch-model flow) | _(from prior turn)_ |
+| `--dangerously-skip-permissions` | `safety: 'autonomous'` or `skipPermissions: true` | `AGY_ACP_SAFETY=autonomous` / `AGY_ACP_SKIP_PERMISSIONS=1` (**default off / safe**) |
+| `--disable-slash-commands` | `disableSlashCommands` (default **true**) | `AGY_ACP_DISABLE_SLASH_COMMANDS=0` to omit |
+| `--print-timeout` | `printTimeout` (e.g. `30m`, `120s`, `0`) | `AGY_ACP_PRINT_TIMEOUT` (default `0`) |
 
-Also accepts a simple ACP-ish `configOptions: [{ id\|configId, value }, ...]`.
+Also accepts a simple ACP-ish `configOptions: [{ id|configId, value }, ...]` including `printTimeout`, `safety`, `disableSlashCommands`.
 
 Invalid model / effort values fail **loud** at agy spawn (stderr + turn ends); the bridge does not validate catalog ids.
 
@@ -88,7 +92,7 @@ Invalid model / effort values fail **loud** at agy spawn (stderr + turn ends); t
 5. **Change model mid-life (recommended):** wait idle → `session/close` → `session/new` with `{ cwd, conversationId, model, ... }`.
 6. **Or** idle `session/set_config_option`:
    ```json
-   { "sessionId": "...", "configId": "model|effort|mode|agent|sandbox|jsonSchema", "value": "..." }
+   { "sessionId": "...", "configId": "model|effort|mode|agent|sandbox|jsonSchema|printTimeout|safety|disableSlashCommands", "value": "..." }
    ```
    Updates session fields, kills lingering child; **next** `session/prompt` respawns with new flags + `--conversation`. When busy → error `-32002`.
 
@@ -98,13 +102,16 @@ Invalid model / effort values fail **loud** at agy spawn (stderr + turn ends); t
 
 | Env | Default | Meaning |
 |-----|---------|---------|
-| `AGY_ACP_SKIP_PERMISSIONS` | `1` | When `1`, spawn with `--dangerously-skip-permissions`. When `0`, headless soft-deny; bridge scrapes stderr and emits suggested allow-rules. |
+| `AGY_ACP_SAFETY` | `safe` | `safe`: no skip-permissions (soft-deny scrape). `autonomous`: skip-permissions; also enables `--sandbox` if sandbox unset. |
+| `AGY_ACP_SKIP_PERMISSIONS` | `0` | When `1`, spawn with `--dangerously-skip-permissions` (overrides safety). When `0`/unset with safe: headless soft-deny. |
+| `AGY_ACP_DISABLE_SLASH_COMMANDS` | `1` | When `1` (default), pass `--disable-slash-commands`. Set `0` to omit. |
+| `AGY_ACP_PRINT_TIMEOUT` | `0` | Passed as `--print-timeout` (e.g. `30m`, `120s`, `0` = wait until turn completes). |
 | `AGY_BIN` | `agy` | Override binary |
 | `AGY_ACP_MODEL` | — | Default `--model` |
 | `AGY_ACP_EFFORT` | — | Default `--effort` |
 | `AGY_ACP_MODE` | — | Default `--mode` |
 | `AGY_ACP_AGENT` | — | Default `--agent` |
-| `AGY_ACP_SANDBOX` | — | `1` → `--sandbox` |
+| `AGY_ACP_SANDBOX` | — | `1` → `--sandbox` (overrides autonomous sandbox default) |
 | `AGY_ACP_JSON_SCHEMA` | — | Schema string or file path for `--json-schema` |
 
 ## `initialize` → bridgeCapabilities
@@ -118,7 +125,7 @@ Returned alongside standard ACP fields (also under `_meta.bridgeCapabilities`):
 | `tools` | `true` | Mapped from agy tool steps |
 | `resume` | `true` | Persists `conversationId`; respawn passes `--conversation` |
 | `permissionRoundTrip` | `false` | No ACP permission UI |
-| `permissionMode` | `preset_or_dangerously_skip` | Env flag or settings.json allow rules |
+| `permissionMode` | `safe_default_or_autonomous` | Default safe (no skip); `AGY_ACP_SAFETY=autonomous` or skip=1 for tools |
 | `nativeCancel` | `false` | |
 | `cancelMode` | `SIGINT_then_KILL` | |
 | `historyReplay` | `adapter` | Gateway must own transcript |
@@ -127,6 +134,20 @@ Returned alongside standard ACP fields (also under `_meta.bridgeCapabilities`):
 | `richContentOutput` | `best_effort` | Detect paths; inline base64 ≤2MB |
 | `clientFilesystem` | `false` | |
 | `clientTerminal` | `false` | |
+
+
+On `initialize`, the bridge runs `agy models` and `agy agents` (≈10s timeout, cached for process lifetime). Results appear as `availableModels` / `availableAgents` on `bridgeCapabilities` and `_meta`, plus ACP-ish `configOptions`. Discovery failure → empty arrays (initialize still succeeds).
+
+`initialize` 时会跑 `agy models` / `agy agents`（约 10s 超时，进程内缓存），结果挂在 `bridgeCapabilities.availableModels|availableAgents` 与 `configOptions`。失败则空数组，不阻断 initialize。
+
+### Safety modes / 安全模式
+
+| Mode | Skip permissions | Sandbox default |
+|------|------------------|-----------------|
+| **safe** (default) | no | omit unless `sandbox: true` / `AGY_ACP_SANDBOX=1` |
+| **autonomous** | yes (`--dangerously-skip-permissions`) | `--sandbox` if sandbox unset |
+
+Explicit `sandbox` / `AGY_ACP_SANDBOX` / `AGY_ACP_SKIP_PERMISSIONS` always win over the mode defaults.
 
 ## Image / rich content strategy / 富内容策略
 
@@ -154,7 +175,8 @@ Without skip-permissions, agy may stderr e.g.:
 | File | Role |
 |------|------|
 | `src/server.ts` | ACP v2 stdio server |
-| `src/lib/agy-args.ts` | `buildAgyArgs` / `extractLaunchConfig` |
+| `src/lib/agy-args.ts` | `buildAgyArgs` / safety / printTimeout / slash |
+| `src/lib/agy-discovery.ts` | `agy models` / `agy agents` parsers |
 | `src/lib/map-agy-to-acp.ts` | agy event → ACP updates |
 | `src/lib/prompt-normalize.ts` | ContentBlock → text + staging |
 | `src/lib/rich-content.ts` | Image path extract / ACP image block |
@@ -173,7 +195,7 @@ Without skip-permissions, agy may stderr e.g.:
 - Image input depends on agy `view_file` / vision actually reading the staged path.
 - Image output inlining is best-effort (path detection + 2MB cap); `generate_image` may be slow or gated.
 - `usage_update.size` is a soft floor (200k).
-- Structured `--json-schema` output may live only in agy’s `result.structured_output`; mapper may not surface it as ACP content yet (spawn + SUCCESS still verified).
+- Structured `--json-schema` output: mapper surfaces `result.structured_output` as a fenced JSON `agent_message_chunk` plus `_meta.structuredOutput`.
 - Third-party bridge — review Google ToS yourself. 第三方工程桥接，请自行评估 ToS。
 
 ## ToS note / 条款说明

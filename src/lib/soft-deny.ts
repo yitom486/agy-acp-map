@@ -188,7 +188,7 @@ export function formatSoftDenyMessage(denies: SoftDenyInfo[]): string {
     lines.push(bits.join(' '));
   }
   lines.push(
-    'Or set AGY_ACP_SKIP_PERMISSIONS=1 / pass --dangerously-skip-permissions (bridge default).',
+    'Or set AGY_ACP_SAFETY=autonomous / AGY_ACP_SKIP_PERMISSIONS=1 (safe is the bridge default).',
   );
   return lines.join('\n');
 }

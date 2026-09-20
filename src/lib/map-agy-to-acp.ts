@@ -246,6 +246,30 @@ export function mapAgyEvent(sessionId: string, event: unknown, state: MapperStat
       );
     }
 
+    // Surface structured_output (e.g. from --json-schema) as a final JSON message chunk
+    if (r.structured_output !== undefined && r.structured_output !== null) {
+      let jsonText;
+      try {
+        jsonText =
+          typeof r.structured_output === 'string'
+            ? r.structured_output
+            : JSON.stringify(r.structured_output, null, 2);
+      } catch {
+        jsonText = String(r.structured_output);
+      }
+      notifications.push(
+        notify(sessionId, {
+          sessionUpdate: 'agent_message_chunk',
+          messageId: `msg_agent_agy_structured_${Date.now()}`,
+          content: {
+            type: 'text',
+            text: '```json\n' + jsonText + '\n```',
+          },
+          _meta: { structuredOutput: r.structured_output },
+        }),
+      );
+    }
+
     // Surface image paths found in final response text
     if (r.response) {
       emitImageAgentChunks(sessionId, state, extractImagePaths(r.response), notifications);

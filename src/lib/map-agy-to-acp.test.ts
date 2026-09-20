@@ -115,6 +115,33 @@ describe('mapAgyEvent', () => {
     expect(notifications.some((n) => n.params.update.sessionUpdate === 'state_update' && n.params.update.state === 'idle')).toBe(true);
   });
 
+  test('result structured_output → agent_message_chunk JSON fence', () => {
+    let state = createMapperState();
+    const structured = { word: 'schemaok', n: 1 };
+    const { notifications, state: next } = mapAgyEvent('s1', {
+      event: 'result',
+      result: {
+        status: 'SUCCESS',
+        conversation_id: 'c-struct',
+        response: 'ok',
+        structured_output: structured,
+        usage: { total_tokens: 10 },
+      },
+    }, state);
+    expect(next.turnDone).toBe(true);
+    const chunk = notifications.find(
+      (n) =>
+        n.params.update.sessionUpdate === 'agent_message_chunk' &&
+        typeof n.params.update.content?.text === 'string' &&
+        n.params.update.content.text.includes('```json'),
+    );
+    expect(chunk).toBeTruthy();
+    expect(chunk!.params.update.content.text).toContain('"word"');
+    expect(chunk!.params.update.content.text).toContain('schemaok');
+    expect(chunk!.params.update._meta?.structuredOutput).toEqual(structured);
+    expect(notifications.some((n) => n.params.update.sessionUpdate === 'state_update')).toBe(true);
+  });
+
   test('offline sample_success.ndjson maps', async () => {
     const sample = path.join(import.meta.dir, '..', '..', 'sample_success.ndjson');
     let state = createMapperState();

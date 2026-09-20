@@ -5,13 +5,20 @@ import {
   applyConfigOption,
   normalizeJsonSchema,
   normalizeSandbox,
+  normalizeSafety,
+  resolveSkipPermissions,
+  resolveSandbox,
+  resolveDisableSlashCommands,
+  resolvePrintTimeout,
 } from './agy-args.ts';
 
 describe('buildAgyArgs', () => {
-  test('first spawn omits --conversation', () => {
-    const args = buildAgyArgs({ cwd: '/tmp/proj', skipPermissions: true });
+  test('first spawn omits --conversation; safe defaults', () => {
+    const args = buildAgyArgs({ cwd: '/tmp/proj' });
     expect(args.includes('--conversation')).toBe(false);
-    expect(args.includes('--dangerously-skip-permissions')).toBe(true);
+    expect(args.includes('--dangerously-skip-permissions')).toBe(false);
+    expect(args.includes('--disable-slash-commands')).toBe(true);
+    expect(args[args.indexOf('--print-timeout') + 1]).toBe('0');
     expect(args.slice(0, 6)).toEqual([
       '-p',
       '',
@@ -22,6 +29,23 @@ describe('buildAgyArgs', () => {
     ]);
     const addIdx = args.indexOf('--add-dir');
     expect(args[addIdx + 1]).toBe('/tmp/proj');
+  });
+
+  test('skipPermissions true adds flag; false omits', () => {
+    const withSkip = buildAgyArgs({ cwd: '/tmp/proj', skipPermissions: true });
+    expect(withSkip.includes('--dangerously-skip-permissions')).toBe(true);
+    const noSkip = buildAgyArgs({ cwd: '/tmp/proj', skipPermissions: false });
+    expect(noSkip.includes('--dangerously-skip-permissions')).toBe(false);
+  });
+
+  test('disableSlashCommands false omits flag', () => {
+    const args = buildAgyArgs({ cwd: '/t', disableSlashCommands: false });
+    expect(args.includes('--disable-slash-commands')).toBe(false);
+  });
+
+  test('printTimeout custom value', () => {
+    const args = buildAgyArgs({ cwd: '/t', printTimeout: '30m' });
+    expect(args[args.indexOf('--print-timeout') + 1]).toBe('30m');
   });
 
   test('respawn includes --conversation', () => {
@@ -56,6 +80,8 @@ describe('buildAgyArgs', () => {
       sandbox: true,
       jsonSchema: schema,
       skipPermissions: true,
+      disableSlashCommands: true,
+      printTimeout: '120s',
     });
     expect(args[args.indexOf('--model') + 1]).toBe('gemini-flash');
     expect(args[args.indexOf('--effort') + 1]).toBe('low');
@@ -64,6 +90,8 @@ describe('buildAgyArgs', () => {
     expect(args.includes('--sandbox')).toBe(true);
     expect(args[args.indexOf('--json-schema') + 1]).toBe(schema);
     expect(args.includes('/extra')).toBe(true);
+    expect(args.includes('--disable-slash-commands')).toBe(true);
+    expect(args[args.indexOf('--print-timeout') + 1]).toBe('120s');
   });
 
   test('sandbox false omits flag', () => {
@@ -82,10 +110,72 @@ describe('buildAgyArgs', () => {
   });
 });
 
+describe('resolveSkipPermissions / safety / sandbox / slash / timeout', () => {
+  test('default safe → skip false', () => {
+    expect(resolveSkipPermissions({}, {})).toBe(false);
+  });
+
+  test('safety autonomous → skip true', () => {
+    expect(resolveSkipPermissions({ safety: 'autonomous' }, {})).toBe(true);
+    expect(resolveSkipPermissions({}, { AGY_ACP_SAFETY: 'autonomous' })).toBe(true);
+  });
+
+  test('explicit skipPermissions wins over safety', () => {
+    expect(resolveSkipPermissions({ safety: 'autonomous', skipPermissions: false }, {})).toBe(
+      false,
+    );
+    expect(resolveSkipPermissions({ safety: 'safe', skipPermissions: true }, {})).toBe(true);
+  });
+
+  test('AGY_ACP_SKIP_PERMISSIONS env wins over safety', () => {
+    expect(
+      resolveSkipPermissions({ safety: 'safe' }, { AGY_ACP_SKIP_PERMISSIONS: '1' }),
+    ).toBe(true);
+    expect(
+      resolveSkipPermissions({ safety: 'autonomous' }, { AGY_ACP_SKIP_PERMISSIONS: '0' }),
+    ).toBe(false);
+  });
+
+  test('autonomous defaults sandbox true when unset', () => {
+    expect(resolveSandbox({ safety: 'autonomous' }, {})).toBe(true);
+    expect(resolveSandbox({ safety: 'safe' }, {})).toBeUndefined();
+    expect(resolveSandbox({ safety: 'autonomous', sandbox: false }, {})).toBe(false);
+    expect(resolveSandbox({}, { AGY_ACP_SANDBOX: '1' })).toBe(true);
+  });
+
+  test('disableSlashCommands default true; env 0 disables', () => {
+    expect(resolveDisableSlashCommands({}, {})).toBe(true);
+    expect(resolveDisableSlashCommands({ disableSlashCommands: false }, {})).toBe(false);
+    expect(resolveDisableSlashCommands({}, { AGY_ACP_DISABLE_SLASH_COMMANDS: '0' })).toBe(false);
+  });
+
+  test('printTimeout default 0; env / session override', () => {
+    expect(resolvePrintTimeout({}, {})).toBe('0');
+    expect(resolvePrintTimeout({ printTimeout: '30m' }, {})).toBe('30m');
+    expect(resolvePrintTimeout({}, { AGY_ACP_PRINT_TIMEOUT: '120s' })).toBe('120s');
+  });
+
+  test('normalizeSafety', () => {
+    expect(normalizeSafety('safe')).toBe('safe');
+    expect(normalizeSafety('autonomous')).toBe('autonomous');
+    expect(normalizeSafety('auto')).toBe('autonomous');
+    expect(normalizeSafety('nope')).toBeUndefined();
+  });
+});
+
 describe('extractLaunchConfig', () => {
   test('top-level preferred', () => {
     const cfg = extractLaunchConfig(
-      { model: 'm1', effort: 'high', mode: 'accept-edits', agent: 'a', sandbox: true },
+      {
+        model: 'm1',
+        effort: 'high',
+        mode: 'accept-edits',
+        agent: 'a',
+        sandbox: true,
+        safety: 'autonomous',
+        printTimeout: '30m',
+        disableSlashCommands: false,
+      },
       {},
     );
     expect(cfg.model).toBe('m1');
@@ -93,18 +183,29 @@ describe('extractLaunchConfig', () => {
     expect(cfg.mode).toBe('accept-edits');
     expect(cfg.agent).toBe('a');
     expect(cfg.sandbox).toBe(true);
+    expect(cfg.safety).toBe('autonomous');
+    expect(cfg.printTimeout).toBe('30m');
+    expect(cfg.disableSlashCommands).toBe(false);
   });
 
   test('_meta / config / env fallbacks', () => {
     const cfg = extractLaunchConfig(
       { _meta: { model: 'from-meta' }, config: { effort: 'medium' } },
-      { AGY_ACP_MODE: 'plan', AGY_ACP_SANDBOX: '1', AGY_ACP_JSON_SCHEMA: '{"x":1}' },
+      {
+        AGY_ACP_MODE: 'plan',
+        AGY_ACP_SANDBOX: '1',
+        AGY_ACP_JSON_SCHEMA: '{"x":1}',
+        AGY_ACP_SAFETY: 'autonomous',
+        AGY_ACP_PRINT_TIMEOUT: '0',
+      },
     );
     expect(cfg.model).toBe('from-meta');
     expect(cfg.effort).toBe('medium');
     expect(cfg.mode).toBe('plan');
     expect(cfg.sandbox).toBe(true);
     expect(cfg.jsonSchema).toBe('{"x":1}');
+    expect(cfg.safety).toBe('autonomous');
+    expect(cfg.printTimeout).toBe('0');
   });
 
   test('conversationId + jsonSchema object', () => {
@@ -121,10 +222,14 @@ describe('extractLaunchConfig', () => {
       configOptions: [
         { id: 'model', value: 'opt-model' },
         { configId: 'sandbox', value: true },
+        { id: 'printTimeout', value: '45s' },
+        { id: 'safety', value: 'safe' },
       ],
     });
     expect(cfg.model).toBe('opt-model');
     expect(cfg.sandbox).toBe(true);
+    expect(cfg.printTimeout).toBe('45s');
+    expect(cfg.safety).toBe('safe');
   });
 });
 
@@ -146,6 +251,12 @@ describe('helpers + applyConfigOption', () => {
     expect(session.sandbox).toBe(true);
     expect(applyConfigOption(session as never, 'jsonSchema', { type: 'object' }).ok).toBe(true);
     expect(session.jsonSchema).toBeTruthy();
+    expect(applyConfigOption(session as never, 'printTimeout', '30m').ok).toBe(true);
+    expect(session.printTimeout).toBe('30m');
+    expect(applyConfigOption(session as never, 'safety', 'autonomous').ok).toBe(true);
+    expect(session.safety).toBe('autonomous');
+    expect(applyConfigOption(session as never, 'disableSlashCommands', false).ok).toBe(true);
+    expect(session.disableSlashCommands).toBe(false);
     const bad = applyConfigOption(session as never, 'nope', 'v');
     expect(bad.ok).toBe(false);
     expect(applyConfigOption(session as never, 'model', '').ok).toBe(true);

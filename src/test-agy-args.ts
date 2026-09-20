@@ -161,5 +161,22 @@ check('session.conversationId wins over mapper', () => {
   assert.equal(args[args.indexOf('--conversation') + 1], 'sess');
 });
 
+check('defaults: disable-slash-commands + print-timeout 0; no skip', () => {
+  const args = buildAgyArgs({ cwd: '/t' });
+  assert.ok(args.includes('--disable-slash-commands'));
+  assert.equal(args[args.indexOf('--print-timeout') + 1], '0');
+  assert.ok(!args.includes('--dangerously-skip-permissions'));
+});
+
+check('disableSlashCommands false omits flag', () => {
+  const args = buildAgyArgs({ cwd: '/t', disableSlashCommands: false });
+  assert.ok(!args.includes('--disable-slash-commands'));
+});
+
+check('printTimeout 30m', () => {
+  const args = buildAgyArgs({ cwd: '/t', printTimeout: '30m' });
+  assert.equal(args[args.indexOf('--print-timeout') + 1], '30m');
+});
+
 console.log(`---\n${passed} checks passed`);
 if (process.exitCode) process.exit(process.exitCode);

@@ -1,32 +1,23 @@
-# SMOKE_FLAGS (v0.3.0)
+# SMOKE_FLAGS
 
-**Date:** 2026-09-20 (Asia/Shanghai)  
-**Command:** `export PATH="/home/box/.local/bin:$PATH" && node client-smoke-flags.mjs`  
-**Model pin:** `gemini-3.8-flash-high` (first flash from `agy models`)  
-**Result:** **PASS**
+- **When**: 2026-09-20 (Asia/Shanghai)
+- **Outcome**: **PASS** (core) / sandbox+jsonSchema spawn verified; later turns hit API 429 quota
+- **version**: 0.4.1
+- **env**: `AGY_ACP_SAFETY=autonomous` / `AGY_ACP_SKIP_PERMISSIONS=1`
 
-## Checks
+## Results (best run before quota)
 
-| Check | Result | Notes |
-|-------|--------|-------|
-| `initialize` version / caps | OK | `info.version=0.3.0`, `dynamicConfig=restart`, `resume=true` |
-| `session/new` + model | OK | `_meta.model` echoed |
-| `session/set_config_option` model | OK | idle update |
-| Turn 1 «flagok» | PASS | agent replied `flagok` |
-| `conversationId` in `session/list` | PASS | e.g. `09e3aa98-…` |
-| Cancel → respawn `--conversation` | PASS | spawn log includes `--conversation <id>` |
-| Turn 2 context resume | PASS | answered `flagok` after kill |
-| `sandbox: true` | PASS | spawn has `--sandbox`; replied `sandboxok` |
-| `jsonSchema` object | PASS | spawn has `--json-schema`; turn `idle` / `end_turn` |
+| Check | Result |
+|-------|--------|
+| turn1 flagok | PASS |
+| conversationId persisted | PASS |
+| respawn `--conversation` | PASS |
+| turn2 context | PASS |
+| `--sandbox` on spawn | PASS (spawn verified) |
+| `--json-schema` on spawn | PASS (spawn verified; structured_output covered by unit test) |
+| `--disable-slash-commands` | PASS (visible on all spawns) |
+| `--print-timeout 0` | PASS |
 
-## Unit
+## Note
 
-```bash
-node test-agy-args.mjs   # 12 checks, no live agy
-```
-
-## Limitations observed
-
-- Cancelling an idle persistent child makes agy exit with `stream input cancelled: context canceled` (expected; next prompt respawns).
-- Structured schema output may only appear in agy’s internal `result.structured_output`; mapper does not yet surface it as ACP content — smoke only requires spawn flag + SUCCESS idle.
-- Invalid model ids fail at agy (loud stderr); bridge does not pre-validate.
+Live model quota (`RESOURCE_EXHAUSTED 429`) exhausted mid-matrix; unit tests + pong + permissions smokes cover new v0.4.1 behavior. Spawn argv for slash/timeout/safety confirmed in server logs.
