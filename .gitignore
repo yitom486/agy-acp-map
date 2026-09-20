@@ -1,0 +1,9 @@
+node_modules/
+.agy-acp-staging/
+smoke-workdir-*/
+*.log
+.DS_Store
+.env
+.env.*
+dist/
+.cache/

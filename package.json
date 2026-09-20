@@ -1,0 +1,30 @@
+{
+  "name": "agy-acp-map",
+  "version": "0.4.0",
+  "description": "Minimal ACP v2 stdio agent bridging Google agy via official stream-json NDJSON (Bun + TypeScript)",
+  "type": "module",
+  "bin": {
+    "agy-acp": "./src/server.ts"
+  },
+  "scripts": {
+    "start": "bun src/server.ts",
+    "map": "bun src/map.ts",
+    "test": "bun test src/lib",
+    "test:args": "bun src/test-agy-args.ts",
+    "smoke": "bun src/client-smoke.ts",
+    "smoke:flags": "bun src/client-smoke-flags.ts",
+    "smoke:permissions": "bun src/client-smoke-permissions.ts",
+    "smoke:image-in": "bun src/client-smoke-image-in.ts",
+    "smoke:image-out": "bun src/client-smoke-image-out.ts",
+    "smoke:robustness": "bun src/client-smoke-robustness.ts",
+    "smoke:all": "bun test src/lib && bun src/client-smoke.ts && bun src/client-smoke-flags.ts && bun src/client-smoke-permissions.ts && bun src/client-smoke-image-in.ts && bun src/client-smoke-image-out.ts && bun src/client-smoke-robustness.ts"
+  },
+  "engines": {
+    "bun": ">=1.1.0"
+  },
+  "license": "UNLICENSED",
+  "private": true,
+  "devDependencies": {
+    "bun-types": "^1.4.2"
+  }
+}
