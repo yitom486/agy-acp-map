@@ -1,4 +1,4 @@
-export type SafetyMode = 'safe' | 'autonomous';
+export type SafetyMode = 'safe' | 'autonomous' | 'autonomous-unsandboxed';
 
 export interface LaunchConfig {
   model?: string;
@@ -38,6 +38,8 @@ export interface BuildAgyArgsSession {
   agent?: string;
   sandbox?: boolean;
   jsonSchema?: string;
+  /** When set, buildAgyArgs may resolve skip/sandbox via resolveSafety unless explicit flags given. */
+  safety?: SafetyMode;
   skipPermissions?: boolean;
   disableSlashCommands?: boolean;
   printTimeout?: string;
@@ -98,14 +100,19 @@ export function normalizeSandbox(v: unknown): boolean | undefined {
   return Boolean(v);
 }
 
+/** Canonical safety tier values (also listed on BRIDGE_CAPABILITIES.safetyTiers). */
+export const SAFETY_TIERS = ['safe', 'autonomous', 'autonomous-unsandboxed'] as const;
+
 /**
  * Normalize safety mode.
+ * Accepts: safe | autonomous | auto | autonomous-unsandboxed | autonomous_unsandboxed | unsandboxed
  */
 export function normalizeSafety(v: unknown): SafetyMode | undefined {
   if (v === undefined || v === null || v === '') return undefined;
-  const s = String(v).trim().toLowerCase();
+  const s = String(v).trim().toLowerCase().replace(/_/g, '-');
   if (s === 'safe') return 'safe';
   if (s === 'autonomous' || s === 'auto') return 'autonomous';
+  if (s === 'autonomous-unsandboxed' || s === 'unsandboxed') return 'autonomous-unsandboxed';
   return undefined;
 }
 
@@ -138,54 +145,97 @@ export function normalizePrintTimeout(v: unknown): string | undefined {
   return s === '' ? undefined : s;
 }
 
+export interface ResolvedSafety {
+  /** Resolved tier used for launch / logging. */
+  safety: SafetyMode;
+  /** Whether to pass --dangerously-skip-permissions. */
+  skipPermissions: boolean;
+  /** Whether to pass --sandbox (false → omit flag). */
+  sandbox: boolean;
+}
+
+export type SafetyResolveInput = {
+  safety?: SafetyMode | string;
+  sandbox?: boolean;
+  skipPermissions?: boolean;
+};
+
 /**
- * Resolve whether to pass --dangerously-skip-permissions.
+ * Central three-tier safety resolution.
  *
- * Priority:
- *   1. explicit session.skipPermissions
- *   2. explicit AGY_ACP_SKIP_PERMISSIONS env
- *   3. safety === 'autonomous' → true; safety === 'safe' / default → false
+ * Tiers:
+ *   safe (default)              — no skip-permissions; sandbox only if explicitly true
+ *   autonomous                  — skip-permissions; default --sandbox unless sandbox:false
+ *   autonomous-unsandboxed      — skip-permissions; NEVER --sandbox
  *
- * Default (v0.4.1+): false (safe).
+ * Inputs:
+ *   session.safety / AGY_ACP_SAFETY
+ *   AGY_ACP_SKIP_PERMISSIONS=1 ≈ autonomous if safety unset; =0 ≈ safe
+ *   explicit session.skipPermissions overrides the skip flag only
+ *   explicit session.sandbox / AGY_ACP_SANDBOX override sandbox except unsandboxed tier
  */
-export function resolveSkipPermissions(
-  session: { skipPermissions?: boolean; safety?: SafetyMode },
+export function resolveSafety(
+  session: SafetyResolveInput = {},
   env: NodeJS.ProcessEnv = process.env,
-): boolean {
-  if (session.skipPermissions !== undefined) return Boolean(session.skipPermissions);
-  const envSkip = env.AGY_ACP_SKIP_PERMISSIONS;
-  if (envSkip !== undefined && envSkip !== '') {
-    return !(envSkip === '0' || envSkip === 'false' || envSkip === 'no');
+): ResolvedSafety {
+  let safety =
+    normalizeSafety(session.safety) ?? normalizeSafety(env.AGY_ACP_SAFETY) ?? undefined;
+
+  if (!safety) {
+    const envSkip = env.AGY_ACP_SKIP_PERMISSIONS;
+    if (envSkip !== undefined && envSkip !== '') {
+      const skip = !(envSkip === '0' || envSkip === 'false' || envSkip === 'no');
+      safety = skip ? 'autonomous' : 'safe';
+    } else {
+      safety = 'safe';
+    }
   }
-  const safety =
-    session.safety ??
-    normalizeSafety(env.AGY_ACP_SAFETY) ??
-    'safe';
-  return safety === 'autonomous';
+
+  let skipPermissions =
+    safety === 'autonomous' || safety === 'autonomous-unsandboxed';
+  if (session.skipPermissions !== undefined) {
+    skipPermissions = Boolean(session.skipPermissions);
+  }
+
+  let sandbox: boolean;
+  if (safety === 'autonomous-unsandboxed') {
+    // Explicit dangerous tier: never pass --sandbox
+    sandbox = false;
+  } else if (session.sandbox !== undefined) {
+    sandbox = Boolean(session.sandbox);
+  } else {
+    const envSand = normalizeSandbox(env.AGY_ACP_SANDBOX);
+    if (envSand !== undefined) {
+      sandbox = envSand;
+    } else if (safety === 'autonomous') {
+      sandbox = true;
+    } else {
+      sandbox = false;
+    }
+  }
+
+  return { safety, skipPermissions, sandbox };
 }
 
 /**
- * Resolve whether to pass --sandbox.
- *
- * Priority:
- *   1. explicit session.sandbox
- *   2. explicit AGY_ACP_SANDBOX env
- *   3. if safety is autonomous and sandbox unset → true (optional default)
- *   4. otherwise undefined / omit
+ * Resolve whether to pass --dangerously-skip-permissions (via resolveSafety).
+ */
+export function resolveSkipPermissions(
+  session: SafetyResolveInput = {},
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return resolveSafety(session, env).skipPermissions;
+}
+
+/**
+ * Resolve whether to pass --sandbox (via resolveSafety).
+ * Returns true/false; callers that previously treated undefined as omit can use === true.
  */
 export function resolveSandbox(
-  session: { sandbox?: boolean; safety?: SafetyMode },
+  session: SafetyResolveInput = {},
   env: NodeJS.ProcessEnv = process.env,
-): boolean | undefined {
-  if (session.sandbox !== undefined) return Boolean(session.sandbox);
-  const envSand = normalizeSandbox(env.AGY_ACP_SANDBOX);
-  if (envSand !== undefined) return envSand;
-  const safety =
-    session.safety ??
-    normalizeSafety(env.AGY_ACP_SAFETY) ??
-    'safe';
-  if (safety === 'autonomous') return true;
-  return undefined;
+): boolean {
+  return resolveSafety(session, env).sandbox;
 }
 
 /**
@@ -371,7 +421,7 @@ export function applyConfigOption(
       return { ok: true };
     }
     const s = normalizeSafety(value);
-    if (s === undefined) return { ok: false, error: "safety must be 'safe' or 'autonomous'" };
+    if (s === undefined) return { ok: false, error: "safety must be 'safe' | 'autonomous' | 'autonomous-unsandboxed'" };
     session.safety = s;
     return { ok: true };
   }
@@ -399,14 +449,29 @@ export function applyConfigOption(
 /**
  * Build argv for `agy` (without the binary name).
  *
- * Defaults (v0.4.1+):
- *   - skipPermissions: false (safe) unless explicitly true / autonomous
+ * When skipPermissions / sandbox are already resolved by the caller (spawnAgy),
+ * they are used as-is. Otherwise resolveSafety(session) fills them from safety tier.
+ *
+ * Defaults:
+ *   - safety: safe → skipPermissions false, sandbox false
  *   - disableSlashCommands: true
  *   - printTimeout: "0"
  */
-export function buildAgyArgs(session: BuildAgyArgsSession): string[] {
-  const skip =
-    session.skipPermissions !== undefined ? Boolean(session.skipPermissions) : false;
+export function buildAgyArgs(
+  session: BuildAgyArgsSession,
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  // resolveSafety owns skip + sandbox (incl. unsandboxed forcing no sandbox).
+  const resolved = resolveSafety(
+    {
+      safety: session.safety,
+      sandbox: session.sandbox,
+      skipPermissions: session.skipPermissions,
+    },
+    env,
+  );
+  const skip = resolved.skipPermissions;
+  const useSandbox = resolved.sandbox;
 
   const disableSlash =
     session.disableSlashCommands !== undefined
@@ -466,7 +531,7 @@ export function buildAgyArgs(session: BuildAgyArgsSession): string[] {
   if (session.agent) {
     args.push('--agent', String(session.agent));
   }
-  if (session.sandbox === true) {
+  if (useSandbox) {
     args.push('--sandbox');
   }
   if (session.jsonSchema) {

@@ -7,8 +7,8 @@
  * Stdin line shape: {"event":"user","message":{"role":"user","content":[{"type":"text","text":"..."}]}}
  *
  * Env:
- *   AGY_ACP_SKIP_PERMISSIONS=0|1  (default 0) — when 1, pass --dangerously-skip-permissions
- *   AGY_ACP_SAFETY=safe|autonomous  (default safe) — autonomous ⇒ skip permissions (+ sandbox if unset)
+ *   AGY_ACP_SKIP_PERMISSIONS=0|1  (default 0) — if safety unset: 1≈autonomous, 0≈safe
+ *   AGY_ACP_SAFETY=safe|autonomous|autonomous-unsandboxed  (default safe)
  *   AGY_ACP_DISABLE_SLASH_COMMANDS=0|1  (default 1) — pass --disable-slash-commands unless 0
  *   AGY_ACP_PRINT_TIMEOUT  (default 0) — pass --print-timeout <value>
  *   AGY_BIN — override agy binary (default "agy")
@@ -44,10 +44,11 @@ import {
   extractLaunchConfig,
   applyConfigOption,
   buildAgyArgs,
+  resolveSafety,
   resolveSkipPermissions,
-  resolveSandbox,
   resolveDisableSlashCommands,
   resolvePrintTimeout,
+  SAFETY_TIERS,
 } from './lib/agy-args.ts';
 import { discoverAgyCatalog } from './lib/agy-discovery.ts';
 import { AgyProcessManager } from './lib/agy-process.ts';
@@ -55,7 +56,7 @@ import { AgyProcessManager } from './lib/agy-process.ts';
 const AGENT_INFO = {
   name: 'agy-acp',
   title: 'agy ACP (stream-json)',
-  version: '0.1.0',
+  version: '0.1.1',
 };
 
 const BRIDGE_CAPABILITIES = {
@@ -64,8 +65,10 @@ const BRIDGE_CAPABILITIES = {
   tools: true,
   // conversationId persisted; respawn passes --conversation <id>
   resume: true,
+  // No interactive ACP permission UI — launch-time safety tiers only
   permissionRoundTrip: false,
-  permissionMode: 'safe_default_or_autonomous',
+  permissionMode: 'safety_tiers',
+  safetyTiers: [...SAFETY_TIERS],
   nativeCancel: false,
   cancelMode: 'SIGINT_then_KILL',
   historyReplay: 'adapter', // gateway must own transcript
@@ -116,7 +119,7 @@ const sessions = new Map();
  *   agent?: string,
  *   sandbox?: boolean,
  *   jsonSchema?: string,
- *   safety?: 'safe'|'autonomous',
+ *   safety?: 'safe'|'autonomous'|'autonomous-unsandboxed',
  *   skipPermissions?: boolean,
  *   disableSlashCommands?: boolean,
  *   printTimeout?: string,
@@ -192,8 +195,7 @@ async function killSessionChild(session: Session) {
 
 async function spawnAgy(session: Session) {
   ensurePath();
-  const skip = resolveSkipPermissions(session);
-  const sandboxResolved = resolveSandbox(session);
+  const resolved = resolveSafety(session);
   const disableSlash = resolveDisableSlashCommands(session);
   const printTimeout = resolvePrintTimeout(session);
   const args = buildAgyArgs({
@@ -204,9 +206,10 @@ async function spawnAgy(session: Session) {
     effort: session.effort,
     mode: session.mode,
     agent: session.agent,
-    sandbox: sandboxResolved === true,
+    safety: resolved.safety,
+    sandbox: resolved.sandbox,
     jsonSchema: session.jsonSchema,
-    skipPermissions: skip,
+    skipPermissions: resolved.skipPermissions,
     disableSlashCommands: disableSlash,
     printTimeout,
   });
@@ -218,15 +221,14 @@ async function spawnAgy(session: Session) {
   }
 
   const conv = session.conversationId || session.mapper?.conversationId;
-  const safetyLabel = session.safety || process.env.AGY_ACP_SAFETY || 'safe';
   process.stderr.write(
-    `[agy-acp] spawn agy skipPermissions=${skip ? 1 : 0} safety=${safetyLabel} cwd=${session.cwd}` +
+    `[agy-acp] spawn agy skipPermissions=${resolved.skipPermissions ? 1 : 0} safety=${resolved.safety} cwd=${session.cwd}` +
       `${conv ? ` conversation=${conv}` : ''}` +
       `${session.model ? ` model=${session.model}` : ''}` +
       `${session.effort ? ` effort=${session.effort}` : ''}` +
       `${session.mode ? ` mode=${session.mode}` : ''}` +
       `${session.agent ? ` agent=${session.agent}` : ''}` +
-      `${sandboxResolved ? ' sandbox=1' : ''}` +
+      `${resolved.sandbox ? ' sandbox=1' : ''}` +
       `${disableSlash ? ' disableSlash=1' : ''}` +
       ` printTimeout=${printTimeout}` +
       `${session.jsonSchema ? ' jsonSchema=1' : ''}` +
@@ -419,6 +421,7 @@ async function handleInitialize(id: unknown, params: Record<string, unknown> | u
       options: [
         { value: 'safe', name: 'safe (default)' },
         { value: 'autonomous', name: 'autonomous' },
+        { value: 'autonomous-unsandboxed', name: 'autonomous-unsandboxed' },
       ],
     },
     { id: 'effort', name: 'Effort', type: 'string' },
@@ -448,9 +451,9 @@ async function handleInitialize(id: unknown, params: Record<string, unknown> | u
       dynamicConfigNote:
         'config at session/new; idle session/set_config_option → kill child; next prompt respawns with new flags + --conversation',
       safetyNote:
-        'safe (default): no --dangerously-skip-permissions; soft-deny scrape enabled. autonomous: skip permissions; sandbox on if sandbox unset. Overrides: AGY_ACP_SKIP_PERMISSIONS, AGY_ACP_SANDBOX, session fields.',
+        'Three launch tiers (no ACP permission UI): safe (default, soft-deny); autonomous (skip-permissions + default --sandbox); autonomous-unsandboxed (skip-permissions, never --sandbox). AGY_ACP_SKIP_PERMISSIONS=1≈autonomous if safety unset. Explicit sandbox overrides except unsandboxed.',
       engineeringNote:
-        '0.1.0 baseline: child error handling, process generation, image allowlist, staging cleanup (ex-hardening)',
+        '0.1.1: three-tier safety (safe / autonomous / autonomous-unsandboxed) via resolveSafety',
     },
   };
   if (protocolVersion === 2) {
@@ -821,10 +824,9 @@ async function dispatch(msg: Record<string, unknown>) {
 
 export async function main() {
   ensurePath();
-  const bootSkip = resolveSkipPermissions({});
-  const bootSafety = process.env.AGY_ACP_SAFETY || 'safe';
+  const boot = resolveSafety({});
   process.stderr.write(
-    `[agy-acp] ${AGENT_INFO.name} ${AGENT_INFO.version} ready (stream-json stdin bridge) safety=${bootSafety} skipPermissions=${bootSkip ? 1 : 0}\n`,
+    `[agy-acp] ${AGENT_INFO.name} ${AGENT_INFO.version} ready (stream-json stdin bridge) safety=${boot.safety} skipPermissions=${boot.skipPermissions ? 1 : 0}\n`,
   );
 
   const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
@@ -875,7 +877,7 @@ export type Session = {
   agent?: string;
   sandbox?: boolean;
   jsonSchema?: string;
-  safety?: 'safe' | 'autonomous';
+  safety?: 'safe' | 'autonomous' | 'autonomous-unsandboxed';
   skipPermissions?: boolean;
   disableSlashCommands?: boolean;
   printTimeout?: string;

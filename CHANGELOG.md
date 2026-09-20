@@ -1,3 +1,27 @@
+## v0.1.1 — three-tier safety (2026-09-20)
+
+Clearer launch-time safety using existing agy flags. **No interactive ACP permission UI.**
+
+### Added
+- Third safety tier: `autonomous-unsandboxed` (aliases: `autonomous_unsandboxed`, `unsandboxed`)
+- Central `resolveSafety(session/env) → { safety, skipPermissions, sandbox }` in `src/lib/agy-args.ts`
+- `BRIDGE_CAPABILITIES.safetyTiers` + `permissionMode: "safety_tiers"` (+ `permissionRoundTrip: false`)
+- `session/new` / env `AGY_ACP_SAFETY` / `session/set_config_option` accept all three tiers
+
+### Behavior
+| Tier | `--dangerously-skip-permissions` | `--sandbox` |
+|------|----------------------------------|-------------|
+| **safe** (default) | no | only if user sets `sandbox: true` / `AGY_ACP_SANDBOX=1` |
+| **autonomous** | yes | default on; off if `sandbox: false` / `AGY_ACP_SANDBOX=0` |
+| **autonomous-unsandboxed** | yes | **never** (forces omit even if sandbox true) |
+
+Backward compat: `AGY_ACP_SKIP_PERMISSIONS=1` ≈ autonomous when safety unset; `=0` ≈ safe.
+
+### Docs / tests
+- README 中英 three-tier table; unit tests for all tiers + overrides
+
+---
+
 ## v0.1.0 — versioning reset (2026-09-20)
 
 Semver reset: the former rapid `0.3`/`0.4`/`0.5` tags are removed from the remote.

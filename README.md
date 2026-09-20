@@ -60,7 +60,7 @@ bun run smoke:all                 # units + full live matrix
 **Windows:** install [Bun](https://bun.sh), put `agy` on `PATH`, then the same commands.
 
 
-## Launch flags / 启动参数 (v0.1.0)
+## Launch flags / 启动参数 (v0.1.1)
 
 Configure on **`session/new`** (preferred) and/or env fallbacks. Stored on the Session; every `spawnAgy` builds argv via `buildAgyArgs(session)`.
 
@@ -75,7 +75,7 @@ Configure on **`session/new`** (preferred) and/or env fallbacks. Stored on the S
 | `--sandbox` | `sandbox: true` | `AGY_ACP_SANDBOX=1` |
 | `--json-schema` | `jsonSchema` (string or object→stringify) | `AGY_ACP_JSON_SCHEMA` (string or path) |
 | `--conversation` | `conversationId` (resume / switch-model flow) | _(from prior turn)_ |
-| `--dangerously-skip-permissions` | `safety: 'autonomous'` or `skipPermissions: true` | `AGY_ACP_SAFETY=autonomous` / `AGY_ACP_SKIP_PERMISSIONS=1` (**default off / safe**) |
+| `--dangerously-skip-permissions` | `safety: 'autonomous' \| 'autonomous-unsandboxed'` or `skipPermissions: true` | `AGY_ACP_SAFETY=…` / `AGY_ACP_SKIP_PERMISSIONS=1` if safety unset (**default off / safe**) |
 | `--disable-slash-commands` | `disableSlashCommands` (default **true**) | `AGY_ACP_DISABLE_SLASH_COMMANDS=0` to omit |
 | `--print-timeout` | `printTimeout` (e.g. `30m`, `120s`, `0`) | `AGY_ACP_PRINT_TIMEOUT` (default `0`) |
 
@@ -104,8 +104,8 @@ Invalid model / effort values fail **loud** at agy spawn (stderr + turn ends); t
 
 | Env | Default | Meaning |
 |-----|---------|---------|
-| `AGY_ACP_SAFETY` | `safe` | `safe`: no skip-permissions (soft-deny scrape). `autonomous`: skip-permissions; also enables `--sandbox` if sandbox unset. |
-| `AGY_ACP_SKIP_PERMISSIONS` | `0` | When `1`, spawn with `--dangerously-skip-permissions` (overrides safety). When `0`/unset with safe: headless soft-deny. |
+| `AGY_ACP_SAFETY` | `safe` | `safe` \| `autonomous` \| `autonomous-unsandboxed` (aliases: `unsandboxed`, `autonomous_unsandboxed`). See Safety modes table. |
+| `AGY_ACP_SKIP_PERMISSIONS` | `0` | If **safety unset**: `1` ≈ treat as `autonomous`; `0` ≈ `safe`. Explicit `AGY_ACP_SAFETY` / `session.safety` wins. |
 | `AGY_ACP_DISABLE_SLASH_COMMANDS` | `1` | When `1` (default), pass `--disable-slash-commands`. Set `0` to omit. |
 | `AGY_ACP_PRINT_TIMEOUT` | `0` | Passed as `--print-timeout` (e.g. `30m`, `120s`, `0` = wait until turn completes). |
 | `AGY_BIN` | `agy` | Override binary |
@@ -113,7 +113,7 @@ Invalid model / effort values fail **loud** at agy spawn (stderr + turn ends); t
 | `AGY_ACP_EFFORT` | — | Default `--effort` |
 | `AGY_ACP_MODE` | — | Default `--mode` |
 | `AGY_ACP_AGENT` | — | Default `--agent` |
-| `AGY_ACP_SANDBOX` | — | `1` → `--sandbox` (overrides autonomous sandbox default) |
+| `AGY_ACP_SANDBOX` | — | `1`/`0` → force sandbox on/off for `safe`/`autonomous`. Ignored for `autonomous-unsandboxed` (never sandboxed). |
 | `AGY_ACP_JSON_SCHEMA` | — | Schema string or file path for `--json-schema` |
 | `AGY_ACP_KEEP_STAGING` | — | `1` → keep `.agy-acp-staging` files after turn/close (debug) |
 
@@ -128,7 +128,8 @@ Returned alongside standard ACP fields (also under `_meta.bridgeCapabilities`):
 | `tools` | `true` | Mapped from agy tool steps |
 | `resume` | `true` | Persists `conversationId`; respawn passes `--conversation` |
 | `permissionRoundTrip` | `false` | No ACP permission UI |
-| `permissionMode` | `safe_default_or_autonomous` | Default safe (no skip); `AGY_ACP_SAFETY=autonomous` or skip=1 for tools |
+| `permissionMode` | `safety_tiers` | Launch strategies only; no ACP permission UI |
+| `safetyTiers` | `[safe, autonomous, autonomous-unsandboxed]` | See Safety modes table |
 | `nativeCancel` | `false` | |
 | `cancelMode` | `SIGINT_then_KILL` | |
 | `historyReplay` | `adapter` | Gateway must own transcript |
@@ -143,14 +144,25 @@ On `initialize`, the bridge runs `agy models` and `agy agents` (≈10s timeout, 
 
 `initialize` 时会跑 `agy models` / `agy agents`（约 10s 超时，进程内缓存），结果挂在 `bridgeCapabilities.availableModels|availableAgents` 与 `configOptions`。失败则空数组，不阻断 initialize。
 
-### Safety modes / 安全模式
+### Safety modes / 安全模式 (v0.1.1)
 
-| Mode | Skip permissions | Sandbox default |
-|------|------------------|-----------------|
-| **safe** (default) | no | omit unless `sandbox: true` / `AGY_ACP_SANDBOX=1` |
-| **autonomous** | yes (`--dangerously-skip-permissions`) | `--sandbox` if sandbox unset |
+No interactive ACP permission UI — **launch strategies only** (`resolveSafety` → agy flags).
 
-Explicit `sandbox` / `AGY_ACP_SANDBOX` / `AGY_ACP_SKIP_PERMISSIONS` always win over the mode defaults.
+无交互式 ACP 权限 UI，仅启动策略（`resolveSafety` → agy 参数）。
+
+| Mode / 模式 | Skip permissions / 跳过权限 | Sandbox / 沙箱 |
+|-------------|------------------------------|----------------|
+| **safe** (default) | no — rely on agy `settings.json` allow/deny + soft-deny messages | only if user sets `sandbox: true` / `AGY_ACP_SANDBOX=1` |
+| **autonomous** | yes (`--dangerously-skip-permissions`) | **default `--sandbox`** unless user sets `sandbox: false` / `AGY_ACP_SANDBOX=0` |
+| **autonomous-unsandboxed** (aliases: `autonomous_unsandboxed`, `unsandboxed`) | yes (`--dangerously-skip-permissions`) | **never** pass `--sandbox` (explicit dangerous tier; ignores sandbox overrides) |
+
+Accept via:
+- `session/new` field `safety`: `'safe' | 'autonomous' | 'autonomous-unsandboxed'`
+- env `AGY_ACP_SAFETY` (same values)
+- idle `session/set_config_option` with `configId: "safety"`
+- Backward compat: `AGY_ACP_SKIP_PERMISSIONS=1` ≈ `autonomous` **if safety unset**; `=0` ≈ `safe`
+
+输入：`session/new.safety` / `AGY_ACP_SAFETY` / `set_config_option`；兼容 `AGY_ACP_SKIP_PERMISSIONS`（仅在未设 safety 时生效）。
 
 ## Image / rich content strategy / 富内容策略
 
