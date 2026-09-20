@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { pathToFileURL } from 'node:url';
 import {
   extractImagePaths,
   fileToAcpImageBlock,
@@ -20,6 +21,14 @@ describe('extractImagePaths', () => {
     const paths = extractImagePaths({ image_path: '/var/out/x.png', nested: { file: '/a/b.gif' } });
     expect(paths).toContain('/var/out/x.png');
     expect(paths).toContain('/a/b.gif');
+  });
+
+  test('finds Windows drive and UNC paths embedded in prose', () => {
+    const drive = String.raw`C:\Users\demo\Pictures\render 01.png`;
+    const unc = String.raw`\\server\share\render.jpg`;
+    const paths = extractImagePaths(`saved to ${drive}; backup at ${unc}.`);
+    expect(paths).toContain(drive);
+    expect(paths).toContain(unc);
   });
 });
 
@@ -40,6 +49,14 @@ describe('fileToAcpImageBlock', () => {
     fs.writeFileSync(tmp, Buffer.alloc(3 * 1024 * 1024));
     expect(fileToAcpImageBlock(tmp)).toBeNull();
     fs.unlinkSync(tmp);
+  });
+
+  test('reads file URI and returns a standard file URI', () => {
+    const png = path.join(import.meta.dir, '..', '..', 'fixtures', 'tiny.png');
+    const uri = pathToFileURL(png).href;
+    const block = fileToAcpImageBlock(uri);
+    expect(block).not.toBeNull();
+    expect(block!.uri).toBe(uri);
   });
 });
 

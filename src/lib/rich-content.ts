@@ -3,6 +3,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 export interface AcpImageBlock {
   type: 'image';
@@ -30,6 +31,56 @@ const MAX_IMAGE_BYTES = 2 * 1024 * 1024; // 2MB
 const PATH_RE =
   /(?:^|[\s"'`(\[=:])((?:\/|~\/|\.\/|\.\.\/)[^\s"'`)\]]+\.(?:png|jpe?g|webp|gif|bmp|svg))\b/gi;
 
+// Windows drive-letter and UNC paths may contain spaces, so stop at the first
+// supported image extension and require a normal text boundary afterwards.
+const WINDOWS_PATH_RE =
+  /(?:^|[\s"'`(\[=:])((?:[A-Za-z]:[\\/]|\\\\)[^<>"|?*\r\n]*?\.(?:png|jpe?g|webp|gif|bmp|svg))(?=$|[\s"'`)\]},;:.!?])/gi;
+
+function decodePathValue(value) {
+  let s = String(value || '').trim();
+  if (/^file:\/\//i.test(s)) {
+    s = s.replace(/^file:\/\//i, '');
+    try {
+      s = decodeURIComponent(s);
+    } catch {
+      /* keep undecodable URI text */
+    }
+
+    // file:///C:/... is the standard Windows file URI spelling. Remove the
+    // URI root slash before passing the drive path to path.resolve().
+    if (/^\/[A-Za-z]:[\\/]/.test(s)) s = s.slice(1);
+    // file://server/share/... represents a UNC path.
+    else if (!/^[A-Za-z]:[\\/]/.test(s) && !s.startsWith('/')) s = `//${s}`;
+  } else {
+    try {
+      s = decodeURIComponent(s);
+    } catch {
+      /* keep undecodable path text */
+    }
+  }
+
+  // Some markdown/file-URI parsers leave the URI root on a Windows drive.
+  if (/^\/[A-Za-z]:[\\/]/.test(s)) s = s.slice(1);
+  return s;
+}
+
+function normalizeImageCandidate(value) {
+  return decodePathValue(value).replace(/[.,;:!?)\\]}]+$/, '');
+}
+
+function isImagePath(value) {
+  const s = normalizeImageCandidate(value);
+  const ext = path.extname(s).toLowerCase();
+  if (!IMAGE_EXT.has(ext)) return false;
+
+  return (
+    path.isAbsolute(s) ||
+    /^[A-Za-z]:[\\/]/.test(s) ||
+    /^\\\\/.test(s) ||
+    /^(?:~[\\/]|\.{1,2}[\\/])/.test(s)
+  );
+}
+
 /**
  * Collect filesystem-looking image paths from a string or JSON-ish object.
  * @param {unknown} textOrObj
@@ -40,17 +91,8 @@ export function extractImagePaths(textOrObj: unknown): string[] {
   const seen = new Set();
   const add = (p) => {
     if (!p || typeof p !== 'string') return;
-    let s = p.trim().replace(/^file:\/\//, '');
-    try {
-      s = decodeURIComponent(s);
-    } catch {
-      /* keep */
-    }
-    // strip trailing punctuation
-    s = s.replace(/[.,;:!?)]+$/, '');
-    if (!s || seen.has(s)) return;
-    const ext = path.extname(s).toLowerCase();
-    if (!IMAGE_EXT.has(ext)) return;
+    const s = normalizeImageCandidate(p);
+    if (!s || seen.has(s) || !isImagePath(s)) return;
     seen.add(s);
     out.push(s);
   };
@@ -58,11 +100,11 @@ export function extractImagePaths(textOrObj: unknown): string[] {
   const walk = (v, depth = 0) => {
     if (depth > 8 || v == null) return;
     if (typeof v === 'string') {
-      // whole string is a path?
-      if (/[\\/]/.test(v) && IMAGE_EXT.has(path.extname(v).toLowerCase())) {
-        add(v);
-      }
+      // Only treat the whole value as a path when it is path-like. This avoids
+      // adding prose such as "saved to C:\\out\\image.png" as one path.
+      if (isImagePath(v)) add(v);
       for (const m of v.matchAll(PATH_RE)) add(m[1]);
+      for (const m of v.matchAll(WINDOWS_PATH_RE)) add(m[1]);
       // markdown file links
       for (const m of v.matchAll(/\[[^\]]*\]\(\s*file:\/\/([^)\s]+)\s*\)/gi)) add(m[1]);
       for (const m of v.matchAll(/\[[^\]]*\]\(\s*(\/?[^)\s]+\.(?:png|jpe?g|webp|gif))\s*\)/gi))
@@ -126,11 +168,8 @@ function mimeForExt(ext) {
 export function fileToAcpImageBlock(filePath: string, opts: { maxBytes?: number } = {}): AcpImageBlock | null {
   const maxBytes = opts.maxBytes ?? MAX_IMAGE_BYTES;
   if (!filePath || typeof filePath !== 'string') return null;
-  let abs = filePath;
-  if (filePath.startsWith('file://')) {
-    abs = decodeURIComponent(filePath.slice('file://'.length));
-  }
-  abs = path.resolve(abs);
+  const normalizedPath = decodePathValue(filePath);
+  const abs = path.resolve(normalizedPath);
   let st;
   try {
     st = fs.statSync(abs);
@@ -148,7 +187,7 @@ export function fileToAcpImageBlock(filePath: string, opts: { maxBytes?: number 
     type: 'image',
     mimeType: mimeForExt(ext),
     data: buf.toString('base64'),
-    uri: `file://${abs}`,
+    uri: pathToFileURL(abs).href,
   };
 }
 
