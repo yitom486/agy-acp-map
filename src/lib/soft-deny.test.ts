@@ -47,6 +47,23 @@ describe('parseSoftDenyFromEvent', () => {
     expect(got[0]!.tool).toBe('run_command');
   });
 
+  test('generic tool ERROR without permission wording is NOT soft-deny', () => {
+    const got = parseSoftDenyFromEvent({
+      event: 'step_update',
+      step_update: {
+        step_type: 'tool',
+        state: 'ERROR',
+        tool_name: 'run_command',
+        tool_info: {
+          name: 'run_command',
+          error: 'command failed with exit code 1: file not found',
+          parameters: { CommandLine: 'cat missing' },
+        },
+      },
+    });
+    expect(got.length).toBe(0);
+  });
+
   test('result.denied_actions', () => {
     const got = parseSoftDenyFromEvent({
       event: 'result',

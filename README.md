@@ -1,4 +1,4 @@
-# agy-acp-map — ACP v2 ↔ agy stream-json bridge (v0.4.1 · Bun + TypeScript)
+# agy-acp-map — ACP v2 ↔ agy stream-json bridge (v0.5.0 · Bun + TypeScript)
 
 **English** | **中文**
 
@@ -17,10 +17,12 @@ NDJSON（换行分隔 JSON / JSONL）是一种按行分帧的格式：每一行�
 ACP Client  ←stdio JSON-RPC NDJSON→  src/server.ts  ←stdin/stdout stream-json→  agy CLI
                                       │
                                       ├─ src/lib/map-agy-to-acp.ts
+                                      ├─ src/lib/agy-process.ts       (spawn/kill/generation)
                                       ├─ src/lib/agy-args.ts          (buildAgyArgs / safety / printTimeout)
                                       ├─ src/lib/agy-discovery.ts     (agy models / agents)
-                                      ├─ src/lib/prompt-normalize.ts  (image → files)
-                                      ├─ src/lib/rich-content.ts      (paths → ACP image)
+                                      ├─ src/lib/prompt-normalize.ts  (image → files + size/cleanup)
+                                      ├─ src/lib/rich-content.ts      (paths → ACP image + allowlist)
+                                      ├─ src/lib/path-allowlist.ts    (session root checks)
                                       └─ src/lib/soft-deny.ts         (stderr soft-deny)
 ```
 
@@ -58,7 +60,7 @@ bun run smoke:all                 # units + full live matrix
 **Windows:** install [Bun](https://bun.sh), put `agy` on `PATH`, then the same commands.
 
 
-## Launch flags / 启动参数 (v0.4.1)
+## Launch flags / 启动参数 (v0.5.0)
 
 Configure on **`session/new`** (preferred) and/or env fallbacks. Stored on the Session; every `spawnAgy` builds argv via `buildAgyArgs(session)`.
 
@@ -113,6 +115,7 @@ Invalid model / effort values fail **loud** at agy spawn (stderr + turn ends); t
 | `AGY_ACP_AGENT` | — | Default `--agent` |
 | `AGY_ACP_SANDBOX` | — | `1` → `--sandbox` (overrides autonomous sandbox default) |
 | `AGY_ACP_JSON_SCHEMA` | — | Schema string or file path for `--json-schema` |
+| `AGY_ACP_KEEP_STAGING` | — | `1` → keep `.agy-acp-staging` files after turn/close (debug) |
 
 ## `initialize` → bridgeCapabilities
 
@@ -160,7 +163,7 @@ Please open/view that file and answer based on what you see.
 
 `--add-dir <cwd>` covers the staging directory.
 
-**Output:** When tools (especially `generate_image`) or agent text mention `png|jpg|webp|gif` paths, the mapper adds ACP `{ type: 'image', mimeType, data }` (base64) if the file exists and is ≤2MB; otherwise path text only.
+**Output:** When tools (especially `generate_image`) or agent text mention `png|jpg|webp|gif` paths, the mapper adds ACP `{ type: 'image', mimeType, data }` (base64) if the file exists, is ≤2MB, **and** resolves under session `cwd` / `.agy-acp-staging` / `additionalDirectories`; otherwise path text only.
 
 ## Soft-deny / 权限
 
@@ -175,16 +178,40 @@ Without skip-permissions, agy may stderr e.g.:
 | File | Role |
 |------|------|
 | `src/server.ts` | ACP v2 stdio server |
+| `src/lib/agy-process.ts` | Child spawn/kill/generation supervision |
 | `src/lib/agy-args.ts` | `buildAgyArgs` / safety / printTimeout / slash |
 | `src/lib/agy-discovery.ts` | `agy models` / `agy agents` parsers |
 | `src/lib/map-agy-to-acp.ts` | agy event → ACP updates |
-| `src/lib/prompt-normalize.ts` | ContentBlock → text + staging |
+| `src/lib/prompt-normalize.ts` | ContentBlock → text + staging + size/cleanup |
 | `src/lib/rich-content.ts` | Image path extract / ACP image block |
+| `src/lib/path-allowlist.ts` | Session cwd/staging/add-dir allowlist |
 | `src/lib/soft-deny.ts` | Stderr soft-deny parser |
+| `docs/AGY_ACP_MAP_ANALYSIS.zh-CN.md` | Architecture analysis (kept) |
 | `src/test-agy-args.ts / `bun test`` | Unit tests (no live agy) |
 | `src/client-smoke*.ts` | Smokes |
 | `fixtures/tiny.png` | Blue “HI” PNG for image-in |
 | `SMOKE_*.md` | Smoke reports |
+
+
+## Opinion / 看法（v0.5.0）
+
+Agree with the analysis: **stream-json > PTY/SQLite** for coupling; still need process supervision, allowlists, staging cleanup, and a real session store later. v0.5.0 hardens the first three.
+
+认同分析结论：stream-json 在耦合上优于 PTY/SQLite；仍需进程监督、路径白名单、staging 清理，以及后续的 session store。v0.5.0 先把前三项工程化。
+
+## v0.5.0 engineering / 工程加固
+
+| Area | Change |
+|------|--------|
+| Child `error` | `child.on('error')` → ACP agent_message + idle `error`/`cancelled`; no unhandled EventEmitter errors |
+| Process supervision | `src/lib/agy-process.ts`: generation tokens, SIGINT→SIGTERM→force kill (Windows `taskkill`), await old exit before respawn, ignore stale NDJSON |
+| Image allowlist | `fileToAcpImageBlock` only reads under session `cwd` / staging / `additionalDirectories` (realpath; relative → session cwd) |
+| Staging | Max 8MB/blob, 32MB/turn; cleanup after idle / session close / shutdown; `AGY_ACP_KEEP_STAGING=1` to keep |
+| Mapper | `result.response` fallback when no `text_delta`; `CANCELLED`/`INTERRUPTED` → `stopReason: cancelled` |
+| Soft-deny | Generic tool ERROR no longer treated as permission deny |
+| session/new | Reject missing / non-directory `cwd` |
+
+See also `docs/AGY_ACP_MAP_ANALYSIS.zh-CN.md` (analysis kept; P0 items addressed in this release).
 
 ## Limitations / 限制
 

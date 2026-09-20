@@ -14,19 +14,26 @@
  *   AGY_BIN — override agy binary (default "agy")
  *   AGY_ACP_MODEL / AGY_ACP_EFFORT / AGY_ACP_MODE / AGY_ACP_AGENT
  *   AGY_ACP_SANDBOX=1 / AGY_ACP_JSON_SCHEMA
+ *   AGY_ACP_KEEP_STAGING=1 — keep .agy-acp-staging files for debug
  */
-import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
+import fs from 'node:fs';
 import {
   createMapperState,
   resetTurnState,
   mapAgyEvent,
   buildAgyUserMessage,
+  richRootsFromSession,
 } from './lib/map-agy-to-acp.ts';
-import { normalizePromptBlocksSync, STAGING_DIRNAME } from './lib/prompt-normalize.ts';
+import {
+  normalizePromptBlocksSync,
+  STAGING_DIRNAME,
+  cleanupStaging,
+  cleanupSessionStaging,
+} from './lib/prompt-normalize.ts';
 import {
   parseSoftDeny,
   parseSoftDenyFromEvent,
@@ -43,11 +50,12 @@ import {
   resolvePrintTimeout,
 } from './lib/agy-args.ts';
 import { discoverAgyCatalog } from './lib/agy-discovery.ts';
+import { AgyProcessManager } from './lib/agy-process.ts';
 
 const AGENT_INFO = {
   name: 'agy-acp',
   title: 'agy ACP (stream-json)',
-  version: '0.4.1',
+  version: '0.5.0',
 };
 
 const BRIDGE_CAPABILITIES = {
@@ -72,11 +80,16 @@ const BRIDGE_CAPABILITIES = {
 const AGY_BIN = process.env.AGY_BIN || 'agy';
 
 /** Per-session: whether soft-deny scraping applies (i.e. not skipping permissions). */
-function sessionSkipsPermissions(session) {
+function sessionSkipsPermissions(session: Session) {
   return resolveSkipPermissions(session);
 }
 
-/** @type {Map<string, Session>} */
+/**
+ * @typedef {object} Session
+ */
+/**
+ * @type {Map<string, Session>}
+ */
 const sessions = new Map();
 
 /**
@@ -87,7 +100,7 @@ const sessions = new Map();
  *   createdAt: string,
  *   updatedAt: string,
  *   title?: string,
- *   child: import('node:child_process').ChildProcess | null,
+ *   proc: AgyProcessManager,
  *   mapper: ReturnType<typeof createMapperState>,
  *   busy: boolean,
  *   cancelled: boolean,
@@ -95,6 +108,7 @@ const sessions = new Map();
  *   stderrBuf: string,
  *   softDenies: import('./lib/soft-deny.ts').SoftDenyInfo[],
  *   softDenyEmitted: boolean,
+ *   stagedFiles: string[],
  *   conversationId?: string,
  *   model?: string,
  *   effort?: string,
@@ -109,21 +123,21 @@ const sessions = new Map();
  * }} Session
  */
 
-function writeMessage(obj) {
+function writeMessage(obj: unknown) {
   process.stdout.write(JSON.stringify(obj) + '\n');
 }
 
-function reply(id, result) {
+function reply(id: unknown, result: unknown) {
   writeMessage({ jsonrpc: '2.0', id, result });
 }
 
-function replyError(id, code, message, data) {
-  const err = { code, message };
+function replyError(id: unknown, code: number, message: string, data?: unknown) {
+  const err: Record<string, unknown> = { code, message };
   if (data !== undefined) err.data = data;
   writeMessage({ jsonrpc: '2.0', id, error: err });
 }
 
-function notifyUpdate(sessionId, update) {
+function notifyUpdate(sessionId: string, update: Record<string, unknown>) {
   writeMessage({
     jsonrpc: '2.0',
     method: 'session/update',
@@ -140,16 +154,16 @@ function ensurePath() {
 }
 
 /** Sync session.conversationId from mapper when learned. */
-function syncConversationId(session) {
+function syncConversationId(session: Session) {
   const id = session.mapper?.conversationId;
   if (id && id !== session.conversationId) {
     session.conversationId = id;
   }
 }
 
-function sessionMeta(session) {
+function sessionMeta(session: Session) {
   /** @type {Record<string, unknown>} */
-  const meta = {};
+  const meta: Record<string, unknown> = {};
   if (session.conversationId) meta.conversationId = session.conversationId;
   if (session.model) meta.model = session.model;
   if (session.effort) meta.effort = session.effort;
@@ -165,7 +179,18 @@ function sessionMeta(session) {
   return Object.keys(meta).length ? meta : undefined;
 }
 
-function spawnAgy(session) {
+function cleanupTurnStaging(session: Session) {
+  if (session.stagedFiles?.length) {
+    cleanupStaging(session.stagedFiles);
+    session.stagedFiles = [];
+  }
+}
+
+async function killSessionChild(session: Session) {
+  await session.proc.kill({ awaitExit: true });
+}
+
+async function spawnAgy(session: Session) {
   ensurePath();
   const skip = resolveSkipPermissions(session);
   const sandboxResolved = resolveSandbox(session);
@@ -208,38 +233,54 @@ function spawnAgy(session) {
       ` args=${JSON.stringify(args)}\n`,
   );
 
-  const child = spawn(AGY_BIN, args, {
+  await session.proc.spawn({
+    bin: AGY_BIN,
+    args,
     cwd: session.cwd,
-    stdio: ['pipe', 'pipe', 'pipe'],
     env: { ...process.env },
-  });
-
-  const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
-  rl.on('line', (line) => {
-    const t = line.trim();
-    if (!t) return;
-    let obj;
-    try {
-      obj = JSON.parse(t);
-    } catch {
+    onEvent: (obj, generation) => {
+      if (generation !== session.proc.currentGeneration) return;
+      onAgyEvent(session, obj);
+    },
+    onStderr: (s, generation) => {
+      if (generation !== session.proc.currentGeneration) return;
+      session.stderrBuf = (session.stderrBuf || '') + s;
+      for (const line of s.split('\n')) {
+        if (line.trim()) process.stderr.write(`[agy stderr] ${line}\n`);
+      }
+    },
+    onBadLine: (t) => {
       process.stderr.write(`[agy-acp] bad ndjson: ${t.slice(0, 120)}\n`);
-      return;
-    }
-    onAgyEvent(session, obj);
-  });
-
-  child.stderr.on('data', (buf) => {
-    const s = buf.toString();
-    session.stderrBuf = (session.stderrBuf || '') + s;
-    for (const line of s.split('\n')) {
-      if (line.trim()) process.stderr.write(`[agy stderr] ${line}\n`);
-    }
-  });
-
-  child.on('exit', (code, signal) => {
-    process.stderr.write(`[agy-acp] agy exited code=${code} signal=${signal}\n`);
-    if (session.child === child) {
-      session.child = null;
+    },
+    onError: (err, generation) => {
+      process.stderr.write(`[agy-acp] child error (gen=${generation}): ${err.message}\n`);
+      if (generation !== session.proc.currentGeneration) return;
+      // Notify ACP + idle; clear child (manager already nulls on error)
+      if (session.busy) {
+        notifyUpdate(session.sessionId, {
+          sessionUpdate: 'agent_message_chunk',
+          messageId: `msg_agent_agy_error_${Date.now()}`,
+          content: {
+            type: 'text',
+            text: `agy process error: ${err.message}`,
+          },
+        });
+        session.busy = false;
+        const stopReason = session.cancelled ? 'cancelled' : 'end_turn';
+        session.cancelled = false;
+        notifyUpdate(session.sessionId, {
+          sessionUpdate: 'state_update',
+          state: 'idle',
+          stopReason: stopReason === 'cancelled' ? 'cancelled' : 'error',
+        });
+        cleanupTurnStaging(session);
+      }
+    },
+    onExit: (code, signal, generation) => {
+      process.stderr.write(
+        `[agy-acp] agy exited code=${code} signal=${signal} gen=${generation}\n`,
+      );
+      if (generation !== session.proc.currentGeneration) return;
       if (session.busy) {
         maybeEmitSoftDeny(session);
         session.busy = false;
@@ -250,21 +291,19 @@ function spawnAgy(session) {
           state: 'idle',
           stopReason,
         });
+        cleanupTurnStaging(session);
       }
-    }
+    },
   });
-
-  session.child = child;
-  return child;
 }
 
-function maybeEmitSoftDeny(session) {
+function maybeEmitSoftDeny(session: Session) {
   if (sessionSkipsPermissions(session)) return;
   const denies = mergeSoftDenies(session.softDenies, parseSoftDeny(session.stderrBuf || ''));
   emitSoftDenyUpdate(session, denies);
 }
 
-function emitSoftDenyUpdate(session, denies) {
+function emitSoftDenyUpdate(session: Session, denies: import('./lib/soft-deny.ts').SoftDenyInfo[]) {
   if (!denies?.length || session.softDenyEmitted) return;
   session.softDenyEmitted = true;
   notifyUpdate(session.sessionId, {
@@ -274,7 +313,7 @@ function emitSoftDenyUpdate(session, denies) {
   });
 }
 
-function onAgyEvent(session, obj) {
+function onAgyEvent(session: Session, obj: unknown) {
   if (!sessionSkipsPermissions(session)) {
     const fromEv = parseSoftDenyFromEvent(obj);
     if (fromEv.length) {
@@ -305,10 +344,13 @@ function onAgyEvent(session, obj) {
       };
       session.softDenyEmitted = true;
       const idleIdx = notifications.findIndex(
-        (n) => n.params?.update?.sessionUpdate === 'state_update' && n.params.update.state === 'idle',
+        (n) =>
+          (n.params?.update as { sessionUpdate?: string; state?: string } | undefined)
+            ?.sessionUpdate === 'state_update' &&
+          (n.params?.update as { state?: string }).state === 'idle',
       );
-      if (idleIdx >= 0) notifications.splice(idleIdx, 0, soft);
-      else notifications.push(soft);
+      if (idleIdx >= 0) notifications.splice(idleIdx, 0, soft as typeof notifications[0]);
+      else notifications.push(soft as typeof notifications[0]);
     }
   }
 
@@ -330,29 +372,11 @@ function onAgyEvent(session, obj) {
     session.busy = false;
     session.cancelled = false;
     session.updatedAt = new Date().toISOString();
+    cleanupTurnStaging(session);
   }
 }
 
-function killAgy(session) {
-  if (!session.child) return;
-  const child = session.child;
-  try {
-    child.kill('SIGINT');
-  } catch {
-    /* ignore */
-  }
-  setTimeout(() => {
-    if (session.child === child && !child.killed) {
-      try {
-        child.kill('SIGKILL');
-      } catch {
-        /* ignore */
-      }
-    }
-  }, 2000).unref?.();
-}
-
-async function handleInitialize(id, params) {
+async function handleInitialize(id: unknown, params: Record<string, unknown> | undefined) {
   const requested = params?.protocolVersion;
   const protocolVersion = requested === 1 ? 1 : 2;
 
@@ -366,8 +390,7 @@ async function handleInitialize(id, params) {
     availableAgents,
   };
 
-  // ACP-ish configOptions catalog (models/agents as select lists when known)
-  const configOptions = [];
+  const configOptions: unknown[] = [];
   if (availableModels.length) {
     configOptions.push({
       id: 'model',
@@ -426,6 +449,8 @@ async function handleInitialize(id, params) {
         'config at session/new; idle session/set_config_option → kill child; next prompt respawns with new flags + --conversation',
       safetyNote:
         'safe (default): no --dangerously-skip-permissions; soft-deny scrape enabled. autonomous: skip permissions; sandbox on if sandbox unset. Overrides: AGY_ACP_SKIP_PERMISSIONS, AGY_ACP_SANDBOX, session fields.',
+      engineeringNote:
+        'v0.5.0: child error handling, process generation tokens, image path allowlist, staging size limits + cleanup',
     },
   };
   if (protocolVersion === 2) {
@@ -449,28 +474,44 @@ async function handleInitialize(id, params) {
   }
 }
 
-function handleSessionNew(id, params) {
+function handleSessionNew(id: unknown, params: Record<string, unknown> | undefined) {
   const cwd = params?.cwd;
   if (!cwd || typeof cwd !== 'string' || !path.isAbsolute(cwd)) {
     replyError(id, -32602, 'cwd must be an absolute path');
     return;
   }
+  // P1: validate cwd exists and is a directory
+  try {
+    const st = fs.statSync(cwd);
+    if (!st.isDirectory()) {
+      replyError(id, -32602, `cwd is not a directory: ${cwd}`);
+      return;
+    }
+  } catch {
+    replyError(id, -32602, `cwd does not exist: ${cwd}`);
+    return;
+  }
+
   const launch = extractLaunchConfig(params);
   const sessionId = randomUUID();
   const now = new Date().toISOString();
-  const mapper = createMapperState();
+  const richRoots = richRootsFromSession({
+    cwd,
+    additionalDirectories: params?.additionalDirectories as string[] | undefined,
+  });
+  const mapper = createMapperState(richRoots);
   if (launch.conversationId) {
     mapper.conversationId = launch.conversationId;
   }
   /** @type {Session} */
-  const session = {
+  const session: Session = {
     sessionId,
     cwd,
-    additionalDirectories: params?.additionalDirectories,
+    additionalDirectories: params?.additionalDirectories as string[] | undefined,
     createdAt: now,
     updatedAt: now,
     title: undefined,
-    child: null,
+    proc: new AgyProcessManager(),
     mapper,
     busy: false,
     cancelled: false,
@@ -478,6 +519,7 @@ function handleSessionNew(id, params) {
     stderrBuf: '',
     softDenies: [],
     softDenyEmitted: false,
+    stagedFiles: [],
     conversationId: launch.conversationId,
     model: launch.model,
     effort: launch.effort,
@@ -498,7 +540,7 @@ function handleSessionNew(id, params) {
   });
 }
 
-function handleSessionList(id, params) {
+function handleSessionList(id: unknown, params: Record<string, unknown> | undefined) {
   const filterCwd = params?.cwd;
   let list = [...sessions.values()];
   if (filterCwd) list = list.filter((s) => s.cwd === filterCwd);
@@ -520,21 +562,22 @@ function handleSessionList(id, params) {
   });
 }
 
-function handleSessionClose(id, params) {
-  const sessionId = params?.sessionId;
-  const session = sessions.get(sessionId);
+async function handleSessionClose(id: unknown, params: Record<string, unknown> | undefined) {
+  const sessionId = params?.sessionId as string | undefined;
+  const session = sessions.get(sessionId as string);
   if (!session) {
     replyError(id, -32001, `unknown sessionId: ${sessionId}`);
     return;
   }
-  killAgy(session);
-  sessions.delete(sessionId);
+  await killSessionChild(session);
+  cleanupSessionStaging(session.cwd);
+  sessions.delete(sessionId as string);
   reply(id, {});
 }
 
-function handleSessionResume(id, params) {
-  const sessionId = params?.sessionId;
-  const session = sessions.get(sessionId);
+function handleSessionResume(id: unknown, params: Record<string, unknown> | undefined) {
+  const sessionId = params?.sessionId as string | undefined;
+  const session = sessions.get(sessionId as string);
   if (!session) {
     replyError(id, -32001, `unknown sessionId: ${sessionId}`);
     return;
@@ -553,11 +596,13 @@ function handleSessionResume(id, params) {
 
 /**
  * Idle-only: update launch config; kill lingering child so next prompt respawns.
- * params: { sessionId, configId, value }  (also accept id as alias of configId)
  */
-function handleSessionSetConfigOption(id, params) {
-  const sessionId = params?.sessionId;
-  const session = sessions.get(sessionId);
+async function handleSessionSetConfigOption(
+  id: unknown,
+  params: Record<string, unknown> | undefined,
+) {
+  const sessionId = params?.sessionId as string | undefined;
+  const session = sessions.get(sessionId as string);
   if (!session) {
     replyError(id, -32001, `unknown sessionId: ${sessionId}`);
     return;
@@ -566,9 +611,13 @@ function handleSessionSetConfigOption(id, params) {
     replyError(id, -32002, 'session is busy; wait for idle before set_config_option');
     return;
   }
-  const configId = params?.configId || params?.id;
+  const configId = (params?.configId || params?.id) as string | undefined;
   if (!configId || typeof configId !== 'string') {
-    replyError(id, -32602, 'configId required (model|effort|mode|agent|sandbox|jsonSchema|printTimeout|safety|disableSlashCommands)');
+    replyError(
+      id,
+      -32602,
+      'configId required (model|effort|mode|agent|sandbox|jsonSchema|printTimeout|safety|disableSlashCommands)',
+    );
     return;
   }
   const result = applyConfigOption(session, configId, params?.value);
@@ -577,9 +626,8 @@ function handleSessionSetConfigOption(id, params) {
     return;
   }
   // Force respawn on next prompt with new flags (+ --conversation if known)
-  if (session.child) {
-    killAgy(session);
-    session.child = null;
+  if (session.proc.isAlive()) {
+    await killSessionChild(session);
   }
   session.updatedAt = new Date().toISOString();
   const meta = sessionMeta(session);
@@ -590,9 +638,9 @@ function handleSessionSetConfigOption(id, params) {
   });
 }
 
-async function handleSessionPrompt(id, params) {
-  const sessionId = params?.sessionId;
-  const session = sessions.get(sessionId);
+async function handleSessionPrompt(id: unknown, params: Record<string, unknown> | undefined) {
+  const sessionId = params?.sessionId as string | undefined;
+  const session = sessions.get(sessionId as string);
   if (!session) {
     replyError(id, -32001, `unknown sessionId: ${sessionId}`);
     return;
@@ -603,7 +651,8 @@ async function handleSessionPrompt(id, params) {
   }
 
   // Optional mid-prompt restart hint (idle only — we already checked busy)
-  const restartWith = params?._meta?.restartWith;
+  const restartWith = (params?._meta as { restartWith?: Record<string, unknown> } | undefined)
+    ?.restartWith;
   if (restartWith && typeof restartWith === 'object') {
     const launch = extractLaunchConfig({ ...restartWith, cwd: session.cwd });
     if (launch.model !== undefined) session.model = launch.model;
@@ -618,25 +667,39 @@ async function handleSessionPrompt(id, params) {
       session.disableSlashCommands = launch.disableSlashCommands;
     }
     if (launch.printTimeout !== undefined) session.printTimeout = launch.printTimeout;
-    if (session.child) {
-      killAgy(session);
-      session.child = null;
+    if (session.proc.isAlive()) {
+      await killSessionChild(session);
     }
   }
 
-  const { text, notes, stagedFiles } = normalizePromptBlocksSync(params?.prompt || [], {
-    cwd: session.cwd,
-  });
+  // Keep mapper richRoots in sync
+  session.mapper.richRoots = richRootsFromSession(session);
+
+  const { text, notes, stagedFiles, sizeRejected } = normalizePromptBlocksSync(
+    (params?.prompt as unknown[]) || [],
+    { cwd: session.cwd },
+  );
+  if (sizeRejected) {
+    // Clean any partial staging from this attempt
+    cleanupStaging(stagedFiles);
+    replyError(id, -32602, 'prompt attachment exceeds size limits (8MB/blob, 32MB/turn)', {
+      notes,
+    });
+    return;
+  }
   if (!text.trim()) {
+    cleanupStaging(stagedFiles);
     replyError(id, -32602, 'empty prompt after flattening content blocks', { notes });
     return;
   }
+
+  session.stagedFiles = stagedFiles;
 
   const messageId = `msg_user_${randomUUID().slice(0, 8)}`;
   reply(id, { messageId });
 
   const content = [{ type: 'text', text }];
-  notifyUpdate(sessionId, {
+  notifyUpdate(sessionId!, {
     sessionUpdate: 'user_message',
     messageId,
     content,
@@ -648,14 +711,14 @@ async function handleSessionPrompt(id, params) {
     process.stderr.write(`[agy-acp] staged files: ${stagedFiles.join(', ')}\n`);
   }
 
-  notifyUpdate(sessionId, {
+  notifyUpdate(sessionId!, {
     sessionUpdate: 'state_update',
     state: 'running',
   });
 
   if (!session.title) {
     session.title = text.slice(0, 80);
-    notifyUpdate(sessionId, {
+    notifyUpdate(sessionId!, {
       sessionUpdate: 'session_info_update',
       title: session.title,
     });
@@ -667,56 +730,57 @@ async function handleSessionPrompt(id, params) {
   session.softDenies = [];
   session.softDenyEmitted = false;
   session.mapper = resetTurnState(session.mapper);
+  session.mapper.richRoots = richRootsFromSession(session);
   session.updatedAt = new Date().toISOString();
 
   try {
-    if (!session.child || session.child.killed || !session.child.stdin?.writable) {
-      spawnAgy(session);
+    if (!session.proc.isWritable()) {
+      await spawnAgy(session);
     }
     const line = JSON.stringify(buildAgyUserMessage(text));
-    session.child.stdin.write(line + '\n');
-  } catch (err) {
+    session.proc.writeLine(line);
+  } catch (err: unknown) {
     session.busy = false;
-    notifyUpdate(sessionId, {
+    const msg = (err as Error)?.message || String(err);
+    notifyUpdate(sessionId!, {
       sessionUpdate: 'agent_message_chunk',
       messageId: `msg_agent_agy_error_${Date.now()}`,
-      content: { type: 'text', text: `failed to feed agy: ${err?.message || err}` },
+      content: { type: 'text', text: `failed to feed agy: ${msg}` },
     });
-    notifyUpdate(sessionId, {
+    notifyUpdate(sessionId!, {
       sessionUpdate: 'state_update',
       state: 'idle',
       stopReason: 'end_turn',
     });
+    cleanupTurnStaging(session);
   }
 }
 
-function handleSessionCancel(params) {
-  const sessionId = params?.sessionId;
-  const session = sessions.get(sessionId);
+async function handleSessionCancel(params: Record<string, unknown> | undefined) {
+  const sessionId = params?.sessionId as string | undefined;
+  const session = sessions.get(sessionId as string);
   if (!session) return;
   session.cancelled = true;
-  if (session.child) {
-    try {
-      session.child.kill('SIGINT');
-    } catch {
-      /* ignore */
-    }
+  if (session.proc.isAlive()) {
+    // Unified kill: SIGINT → wait → force. Exit handler will emit idle cancelled.
+    void killSessionChild(session);
   } else if (session.busy) {
     session.busy = false;
-    notifyUpdate(sessionId, {
+    notifyUpdate(sessionId!, {
       sessionUpdate: 'state_update',
       state: 'idle',
       stopReason: 'cancelled',
     });
+    cleanupTurnStaging(session);
   }
 }
 
-async function dispatch(msg) {
+async function dispatch(msg: Record<string, unknown>) {
   if (!msg || msg.jsonrpc !== '2.0') return;
 
   if (msg.method && msg.id === undefined) {
     if (msg.method === 'session/cancel') {
-      handleSessionCancel(msg.params);
+      await handleSessionCancel(msg.params as Record<string, unknown>);
     }
     return;
   }
@@ -727,31 +791,31 @@ async function dispatch(msg) {
   try {
     switch (method) {
       case 'initialize':
-        await handleInitialize(id, params);
+        await handleInitialize(id, params as Record<string, unknown>);
         break;
       case 'session/new':
-        handleSessionNew(id, params);
+        handleSessionNew(id, params as Record<string, unknown>);
         break;
       case 'session/list':
-        handleSessionList(id, params);
+        handleSessionList(id, params as Record<string, unknown>);
         break;
       case 'session/close':
-        handleSessionClose(id, params);
+        await handleSessionClose(id, params as Record<string, unknown>);
         break;
       case 'session/resume':
-        handleSessionResume(id, params);
+        handleSessionResume(id, params as Record<string, unknown>);
         break;
       case 'session/set_config_option':
-        handleSessionSetConfigOption(id, params);
+        await handleSessionSetConfigOption(id, params as Record<string, unknown>);
         break;
       case 'session/prompt':
-        await handleSessionPrompt(id, params);
+        await handleSessionPrompt(id, params as Record<string, unknown>);
         break;
       default:
         replyError(id, -32601, `Method not found: ${method}`);
     }
-  } catch (err) {
-    replyError(id, -32603, err?.message || String(err));
+  } catch (err: unknown) {
+    replyError(id, -32603, (err as Error)?.message || String(err));
   }
 }
 
@@ -767,7 +831,7 @@ export async function main() {
   for await (const line of rl) {
     const t = line.trim();
     if (!t) continue;
-    let msg;
+    let msg: unknown;
     try {
       msg = JSON.parse(t);
     } catch {
@@ -775,14 +839,47 @@ export async function main() {
       continue;
     }
     if (Array.isArray(msg)) {
-      for (const m of msg) await dispatch(m);
+      for (const m of msg) await dispatch(m as Record<string, unknown>);
     } else {
-      await dispatch(msg);
+      await dispatch(msg as Record<string, unknown>);
     }
   }
 
-  for (const s of sessions.values()) killAgy(s);
+  for (const s of sessions.values()) {
+    await killSessionChild(s);
+    cleanupSessionStaging(s.cwd);
+  }
 }
+
+// Export Session type for typedef consumers
+export type Session = {
+  sessionId: string;
+  cwd: string;
+  additionalDirectories?: string[];
+  createdAt: string;
+  updatedAt: string;
+  title?: string;
+  proc: AgyProcessManager;
+  mapper: ReturnType<typeof createMapperState>;
+  busy: boolean;
+  cancelled: boolean;
+  protocolVersion: number;
+  stderrBuf: string;
+  softDenies: import('./lib/soft-deny.ts').SoftDenyInfo[];
+  softDenyEmitted: boolean;
+  stagedFiles: string[];
+  conversationId?: string;
+  model?: string;
+  effort?: string;
+  mode?: string;
+  agent?: string;
+  sandbox?: boolean;
+  jsonSchema?: string;
+  safety?: 'safe' | 'autonomous';
+  skipPermissions?: boolean;
+  disableSlashCommands?: boolean;
+  printTimeout?: string;
+};
 
 const isMain =
   process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;

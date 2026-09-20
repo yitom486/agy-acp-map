@@ -6,7 +6,9 @@
  *   Add an allow-rule under permissions.allow in settings.json (e.g. command(<target>)).
  *
  * Also accepts explicit key=value fragments: tool=, allow-rule=, path=
- * And stream-json: tool ERROR + result.denied_actions
+ * And stream-json: tool ERROR with permission/denied wording + result.denied_actions
+ *
+ * v0.5.0: do NOT treat generic tool ERROR as soft-deny (tighten parseSoftDenyFromEvent).
  */
 
 export interface SoftDenyInfo {
@@ -16,25 +18,23 @@ export interface SoftDenyInfo {
   source?: string;
 }
 
-
 /**
  * @param {string} stderrText
  * @returns {SoftDenyInfo[]}
  */
 export function parseSoftDeny(stderrText: string): SoftDenyInfo[] {
   if (!stderrText || typeof stderrText !== 'string') return [];
-  const found = [];
-  const seen = new Set();
+  const found: SoftDenyInfo[] = [];
+  const seen = new Set<string>();
 
-  const push = (tool, allowRule, path, source) => {
+  const push = (tool: string, allowRule: string, path?: string, source?: string) => {
     const t = String(tool || '').trim();
     const rule = String(allowRule || '').trim();
     if (!t && !rule) return;
     const key = `${t}|${rule}|${path || ''}`;
     if (seen.has(key)) return;
     seen.add(key);
-    /** @type {SoftDenyInfo} */
-    const item = {
+    const item: SoftDenyInfo = {
       tool: t || guessToolFromRule(rule),
       allowRule: rule || defaultAllowRule(t),
       source: source || 'stderr',
@@ -59,7 +59,7 @@ export function parseSoftDeny(stderrText: string): SoftDenyInfo[] {
   for (const m of stderrText.matchAll(
     /required the\s+"([^"]+)"\s+permission[^\n]*auto-denied/gi,
   )) {
-    const perm = m[1];
+    const perm = m[1]!;
     const ctx = nearby(stderrText, m.index);
     const eg = /e\.g\.\s+([a-zA-Z_][\w]*(?:\(\s*<[^>]+>\s*\))?)/i.exec(m[0] + ' ' + ctx);
     const allowRule =
@@ -73,7 +73,7 @@ export function parseSoftDeny(stderrText: string): SoftDenyInfo[] {
   for (const m of stderrText.matchAll(
     /allow-rule[^\n]*?\(e\.g\.\s+([a-zA-Z_][\w]*\(\s*<[^>]+>\s*\))\)/gi,
   )) {
-    const rule = m[1];
+    const rule = m[1]!;
     const toolName = rule.replace(/\(.*$/, '');
     push(permToTool(toolName), rule, undefined, 'stderr-eg');
   }
@@ -91,32 +91,38 @@ export function parseSoftDeny(stderrText: string): SoftDenyInfo[] {
   return found;
 }
 
+const PERMISSION_HINT =
+  /permission|denied|auto-denied|allow-rule|not allowed|unauthorized|access denied/i;
+
 /**
  * Extract soft-denies from a single agy NDJSON event (tool ERROR / result.denied_actions).
- * @param {object} event
- * @returns {SoftDenyInfo[]}
+ * Generic tool errors without permission wording are ignored (v0.5.0 tighten).
  */
 export function parseSoftDenyFromEvent(event: unknown): SoftDenyInfo[] {
-  const out = [];
+  const out: SoftDenyInfo[] = [];
   if (!event || typeof event !== 'object') return out;
+  const ev = event as Record<string, unknown>;
 
-  if (event.event === 'step_update') {
-    const s = event.step_update || {};
-    if (s.step_type === 'tool' && (s.state === 'ERROR' || s.tool_info?.error)) {
-      const toolName = s.tool_name || s.tool_info?.name || 'tool';
-      const err = s.tool_info?.error;
+  if (ev.event === 'step_update') {
+    const s = (ev.step_update || {}) as Record<string, unknown>;
+    if (s.step_type === 'tool' && (s.state === 'ERROR' || (s.tool_info as { error?: unknown })?.error)) {
+      const toolInfo = (s.tool_info || {}) as Record<string, unknown>;
+      const toolName = (s.tool_name as string) || (toolInfo.name as string) || 'tool';
+      const err = toolInfo.error;
       const msg =
         typeof err === 'string'
           ? err
-          : err?.message
-            ? String(err.message)
+          : err && typeof err === 'object' && 'message' in err
+            ? String((err as { message: unknown }).message)
             : err
               ? JSON.stringify(err)
               : '';
-      if (/permission|denied|auto-denied/i.test(msg) || s.state === 'ERROR') {
+      // Tighten: require permission/denied wording — do NOT treat bare ERROR as soft-deny
+      if (PERMISSION_HINT.test(msg)) {
+        const params = (toolInfo.parameters || {}) as Record<string, unknown>;
         const cmd =
-          s.tool_info?.parameters?.CommandLine ||
-          s.tool_info?.parameters?.command ||
+          (params.CommandLine as string | undefined) ||
+          (params.command as string | undefined) ||
           undefined;
         let allowRule = defaultAllowRule(toolName);
         if (toolName === 'run_command' || /command/i.test(toolName)) {
@@ -126,19 +132,20 @@ export function parseSoftDenyFromEvent(event: unknown): SoftDenyInfo[] {
           tool: toolName,
           allowRule,
           source: 'tool-error',
-          ...(typeof cmd === 'string' ? {} : {}),
         });
       }
     }
   }
 
-  if (event.event === 'result') {
-    const denied = event.result?.denied_actions;
+  if (ev.event === 'result') {
+    const result = (ev.result || {}) as Record<string, unknown>;
+    const denied = result.denied_actions;
     if (Array.isArray(denied)) {
       for (const d of denied) {
-        const action = d?.action || d?.display_name || 'unknown';
+        const item = d as { action?: string; display_name?: string };
+        const action = item?.action || item?.display_name || 'unknown';
         const tool =
-          action === 'command' || /RunCommand/i.test(String(d?.display_name || ''))
+          action === 'command' || /RunCommand/i.test(String(item?.display_name || ''))
             ? 'run_command'
             : String(action);
         out.push({
@@ -155,11 +162,10 @@ export function parseSoftDenyFromEvent(event: unknown): SoftDenyInfo[] {
 
 /**
  * Merge and de-dupe soft-deny lists.
- * @param {...SoftDenyInfo[]} lists
  */
 export function mergeSoftDenies(...lists: (SoftDenyInfo[] | undefined)[]): SoftDenyInfo[] {
-  const seen = new Set();
-  const out = [];
+  const seen = new Set<string>();
+  const out: SoftDenyInfo[] = [];
   for (const list of lists) {
     for (const d of list || []) {
       const key = `${d.tool}|${d.allowRule}|${d.path || ''}`;
@@ -173,7 +179,6 @@ export function mergeSoftDenies(...lists: (SoftDenyInfo[] | undefined)[]): SoftD
 
 /**
  * Format soft-denies into a short agent-facing note.
- * @param {SoftDenyInfo[]} denies
  */
 export function formatSoftDenyMessage(denies: SoftDenyInfo[]): string {
   if (!denies?.length) return '';
@@ -193,12 +198,12 @@ export function formatSoftDenyMessage(denies: SoftDenyInfo[]): string {
   return lines.join('\n');
 }
 
-function nearby(text, index, radius = 400) {
+function nearby(text: string, index: number | undefined, radius = 400) {
   const start = Math.max(0, (index || 0) - 80);
   return text.slice(start, (index || 0) + radius);
 }
 
-function permToTool(perm) {
+function permToTool(perm: string) {
   const p = String(perm || '').toLowerCase();
   if (p === 'command' || p === 'run_command') return 'run_command';
   if (p === 'write' || p === 'edit') return 'write_to_file';
@@ -206,12 +211,12 @@ function permToTool(perm) {
   return perm;
 }
 
-function guessToolFromRule(rule) {
+function guessToolFromRule(rule: string) {
   const name = String(rule || '').replace(/\(.*$/, '');
   return permToTool(name);
 }
 
-function defaultAllowRule(tool) {
+function defaultAllowRule(tool: string) {
   const t = String(tool || '').toLowerCase();
   if (t === 'run_command' || t === 'command') return 'command(<target>)';
   if (t) return `${t}(<target>)`;

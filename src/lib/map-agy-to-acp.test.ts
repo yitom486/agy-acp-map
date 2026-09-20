@@ -157,3 +157,80 @@ describe('mapAgyEvent', () => {
     expect(total).toBeGreaterThan(0);
   });
 });
+
+describe('v0.5.0 mapper hardening', () => {
+  test('result.response fallback when no text_delta', () => {
+    let state = createMapperState();
+    const { notifications, state: next } = mapAgyEvent(
+      's1',
+      {
+        event: 'result',
+        result: {
+          status: 'SUCCESS',
+          conversation_id: 'c-fallback',
+          response: 'only in result.response',
+          usage: { total_tokens: 5 },
+        },
+      },
+      state,
+    );
+    expect(next.turnDone).toBe(true);
+    expect(next.emittedTextDelta).toBe(true);
+    const chunk = notifications.find(
+      (n) =>
+        n.params.update.sessionUpdate === 'agent_message_chunk' &&
+        n.params.update.content?.text === 'only in result.response',
+    );
+    expect(chunk).toBeTruthy();
+    expect(chunk!.params.update._meta?.fromResultResponse).toBe(true);
+  });
+
+  test('does not duplicate response when text_delta already emitted', () => {
+    let state = createMapperState();
+    let r = mapAgyEvent(
+      's1',
+      {
+        event: 'step_update',
+        step_update: {
+          step_index: 1,
+          step_type: 'agent_response',
+          state: 'ACTIVE',
+          text_delta: 'streamed',
+        },
+      },
+      state,
+    );
+    state = r.state;
+    r = mapAgyEvent(
+      's1',
+      {
+        event: 'result',
+        result: {
+          status: 'SUCCESS',
+          response: 'streamed full',
+        },
+      },
+      state,
+    );
+    const fallbacks = r.notifications.filter(
+      (n) => n.params.update._meta?.fromResultResponse === true,
+    );
+    expect(fallbacks.length).toBe(0);
+  });
+
+  test('CANCELLED / INTERRUPTED → stopReason cancelled', () => {
+    for (const status of ['CANCELLED', 'INTERRUPTED', 'CANCELED', 'ABORTED']) {
+      const state = createMapperState();
+      const { notifications, state: next } = mapAgyEvent(
+        's1',
+        { event: 'result', result: { status, response: 'stopped' } },
+        state,
+      );
+      expect(next.lastStopReason).toBe('cancelled');
+      const idle = notifications.find(
+        (n) => n.params.update.sessionUpdate === 'state_update',
+      );
+      expect(idle!.params.update.stopReason).toBe('cancelled');
+    }
+  });
+});

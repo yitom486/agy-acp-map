@@ -36,6 +36,7 @@ describe('fileToAcpImageBlock', () => {
   test('reads small png fixture', () => {
     const png = path.join(import.meta.dir, '..', '..', 'fixtures', 'tiny.png');
     expect(fs.existsSync(png)).toBe(true);
+    // No cwd → allowlist not enforced (offline/unit convenience)
     const block = fileToAcpImageBlock(png);
     expect(block).not.toBeNull();
     expect(block!.type).toBe('image');
@@ -58,16 +59,30 @@ describe('fileToAcpImageBlock', () => {
     expect(block).not.toBeNull();
     expect(block!.uri).toBe(uri);
   });
+
+  test('with cwd allowlist: allow under root, deny outside', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-rich-'));
+    const inside = path.join(dir, 'in.png');
+    fs.copyFileSync(path.join(import.meta.dir, '..', '..', 'fixtures', 'tiny.png'), inside);
+    expect(fileToAcpImageBlock(inside, { cwd: dir })).not.toBeNull();
+
+    const outside = path.join(os.tmpdir(), `agy-rich-out-${Date.now()}.png`);
+    fs.copyFileSync(path.join(import.meta.dir, '..', '..', 'fixtures', 'tiny.png'), outside);
+    expect(fileToAcpImageBlock(outside, { cwd: dir })).toBeNull();
+    fs.unlinkSync(outside);
+  });
 });
 
 describe('buildRichToolContent', () => {
   test('includes text + inlines existing image', () => {
-    const png = path.join(import.meta.dir, '..', '..', 'fixtures', 'tiny.png');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-rich2-'));
+    const png = path.join(dir, 'out.png');
+    fs.copyFileSync(path.join(import.meta.dir, '..', '..', 'fixtures', 'tiny.png'), png);
     const { content, imagePaths, emittedImages } = buildRichToolContent(
       `saved to ${png}`,
       undefined,
       undefined,
-      { toolName: 'generate_image' },
+      { toolName: 'generate_image', cwd: dir },
     );
     expect(imagePaths).toContain(png);
     expect(emittedImages).toBeGreaterThanOrEqual(1);

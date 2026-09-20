@@ -4,6 +4,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import {
+  decodeFsPath,
+  isPathAllowed,
+  resolveAgainstCwd,
+  type PathAllowlistRoots,
+} from './path-allowlist.ts';
 
 export interface AcpImageBlock {
   type: 'image';
@@ -24,6 +30,15 @@ export interface ToolContentEntry {
   content: AcpContentBlock;
 }
 
+export interface FileToAcpImageOpts extends Partial<PathAllowlistRoots> {
+  maxBytes?: number;
+  /** When true and roots provided, enforce allowlist. Default: enforce when cwd set. */
+  enforceAllowlist?: boolean;
+}
+
+export interface BuildRichToolContentOpts extends FileToAcpImageOpts {
+  toolName?: string;
+}
 
 const IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.svg']);
 const MAX_IMAGE_BYTES = 2 * 1024 * 1024; // 2MB
@@ -36,39 +51,15 @@ const PATH_RE =
 const WINDOWS_PATH_RE =
   /(?:^|[\s"'`(\[=:])((?:[A-Za-z]:[\\/]|\\\\)[^<>"|?*\r\n]*?\.(?:png|jpe?g|webp|gif|bmp|svg))(?=$|[\s"'`)\]},;:.!?])/gi;
 
-function decodePathValue(value) {
-  let s = String(value || '').trim();
-  if (/^file:\/\//i.test(s)) {
-    s = s.replace(/^file:\/\//i, '');
-    try {
-      s = decodeURIComponent(s);
-    } catch {
-      /* keep undecodable URI text */
-    }
-
-    // file:///C:/... is the standard Windows file URI spelling. Remove the
-    // URI root slash before passing the drive path to path.resolve().
-    if (/^\/[A-Za-z]:[\\/]/.test(s)) s = s.slice(1);
-    // file://server/share/... represents a UNC path.
-    else if (!/^[A-Za-z]:[\\/]/.test(s) && !s.startsWith('/')) s = `//${s}`;
-  } else {
-    try {
-      s = decodeURIComponent(s);
-    } catch {
-      /* keep undecodable path text */
-    }
-  }
-
-  // Some markdown/file-URI parsers leave the URI root on a Windows drive.
-  if (/^\/[A-Za-z]:[\\/]/.test(s)) s = s.slice(1);
-  return s;
+function decodePathValue(value: string): string {
+  return decodeFsPath(value);
 }
 
-function normalizeImageCandidate(value) {
+function normalizeImageCandidate(value: string): string {
   return decodePathValue(value).replace(/[.,;:!?)\\]}]+$/, '');
 }
 
-function isImagePath(value) {
+function isImagePath(value: string): boolean {
   const s = normalizeImageCandidate(value);
   const ext = path.extname(s).toLowerCase();
   if (!IMAGE_EXT.has(ext)) return false;
@@ -83,13 +74,11 @@ function isImagePath(value) {
 
 /**
  * Collect filesystem-looking image paths from a string or JSON-ish object.
- * @param {unknown} textOrObj
- * @returns {string[]}
  */
 export function extractImagePaths(textOrObj: unknown): string[] {
-  const out = [];
-  const seen = new Set();
-  const add = (p) => {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const add = (p: unknown) => {
     if (!p || typeof p !== 'string') return;
     const s = normalizeImageCandidate(p);
     if (!s || seen.has(s) || !isImagePath(s)) return;
@@ -97,15 +86,12 @@ export function extractImagePaths(textOrObj: unknown): string[] {
     out.push(s);
   };
 
-  const walk = (v, depth = 0) => {
+  const walk = (v: unknown, depth = 0) => {
     if (depth > 8 || v == null) return;
     if (typeof v === 'string') {
-      // Only treat the whole value as a path when it is path-like. This avoids
-      // adding prose such as "saved to C:\\out\\image.png" as one path.
       if (isImagePath(v)) add(v);
       for (const m of v.matchAll(PATH_RE)) add(m[1]);
       for (const m of v.matchAll(WINDOWS_PATH_RE)) add(m[1]);
-      // markdown file links
       for (const m of v.matchAll(/\[[^\]]*\]\(\s*file:\/\/([^)\s]+)\s*\)/gi)) add(m[1]);
       for (const m of v.matchAll(/\[[^\]]*\]\(\s*(\/?[^)\s]+\.(?:png|jpe?g|webp|gif))\s*\)/gi))
         add(m[1]);
@@ -116,7 +102,7 @@ export function extractImagePaths(textOrObj: unknown): string[] {
       return;
     }
     if (typeof v === 'object') {
-      for (const [k, val] of Object.entries(v)) {
+      for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
         const kl = k.toLowerCase();
         if (
           typeof val === 'string' &&
@@ -138,7 +124,7 @@ export function extractImagePaths(textOrObj: unknown): string[] {
   return out;
 }
 
-function mimeForExt(ext) {
+function mimeForExt(ext: string): string {
   switch (ext.toLowerCase()) {
     case '.png':
       return 'image/png';
@@ -158,19 +144,46 @@ function mimeForExt(ext) {
   }
 }
 
+function shouldEnforceAllowlist(opts: FileToAcpImageOpts): boolean {
+  if (opts.enforceAllowlist === false) return false;
+  if (opts.enforceAllowlist === true) return true;
+  return Boolean(opts.cwd);
+}
+
 /**
  * Read an image file into an ACP ImageContent block (base64 data).
- * Skips if missing or larger than MAX_IMAGE_BYTES.
- * @param {string} filePath
- * @param {{ maxBytes?: number }} [opts]
- * @returns {{ type: 'image', mimeType: string, data: string, uri?: string } | null}
+ * Skips if missing, oversized, or outside allowlisted roots (when cwd provided).
+ * Relative paths resolve against opts.cwd (session cwd), not process.cwd().
  */
-export function fileToAcpImageBlock(filePath: string, opts: { maxBytes?: number } = {}): AcpImageBlock | null {
+export function fileToAcpImageBlock(
+  filePath: string,
+  opts: FileToAcpImageOpts = {},
+): AcpImageBlock | null {
   const maxBytes = opts.maxBytes ?? MAX_IMAGE_BYTES;
   if (!filePath || typeof filePath !== 'string') return null;
   const normalizedPath = decodePathValue(filePath);
-  const abs = path.resolve(normalizedPath);
-  let st;
+
+  if (shouldEnforceAllowlist(opts)) {
+    const roots: PathAllowlistRoots = {
+      cwd: opts.cwd!,
+      additionalDirectories: opts.additionalDirectories,
+      stagingDir: opts.stagingDir,
+    };
+    if (!isPathAllowed(normalizedPath, roots)) {
+      return null;
+    }
+  }
+
+  let abs: string;
+  if (opts.cwd) {
+    const resolved = resolveAgainstCwd(normalizedPath, opts.cwd);
+    if (!resolved) return null;
+    abs = resolved;
+  } else {
+    abs = path.resolve(normalizedPath);
+  }
+
+  let st: fs.Stats;
   try {
     st = fs.statSync(abs);
   } catch {
@@ -178,30 +191,35 @@ export function fileToAcpImageBlock(filePath: string, opts: { maxBytes?: number 
   }
   if (!st.isFile()) return null;
   if (st.size > maxBytes) {
-    return null; // caller should keep path text only
+    return null;
   }
   const ext = path.extname(abs);
   if (!IMAGE_EXT.has(ext.toLowerCase())) return null;
-  const buf = fs.readFileSync(abs);
+  let realAbs = abs;
+  try {
+    realAbs = fs.realpathSync(abs);
+  } catch {
+    /* keep abs */
+  }
+  const buf = fs.readFileSync(realAbs);
   return {
     type: 'image',
     mimeType: mimeForExt(ext),
     data: buf.toString('base64'),
-    uri: pathToFileURL(abs).href,
+    uri: pathToFileURL(realAbs).href,
   };
 }
 
 /**
  * Build ACP tool_call_update content entries: text + optional image blocks.
- * @param {string} textOut
- * @param {unknown} [params]
- * @param {unknown} [output]
- * @param {{ toolName?: string }} [opts]
- * @returns {{ content: object[], imagePaths: string[], emittedImages: number }}
  */
-export function buildRichToolContent(textOut: string, params?: unknown, output?: unknown, opts: { toolName?: string } = {}): { content: ToolContentEntry[]; imagePaths: string[]; emittedImages: number } {
-  /** @type {object[]} */
-  const content = [];
+export function buildRichToolContent(
+  textOut: string,
+  params?: unknown,
+  output?: unknown,
+  opts: BuildRichToolContentOpts = {},
+): { content: ToolContentEntry[]; imagePaths: string[]; emittedImages: number } {
+  const content: ToolContentEntry[] = [];
   if (textOut) {
     content.push({
       type: 'content',
@@ -214,27 +232,48 @@ export function buildRichToolContent(textOut: string, params?: unknown, output?:
     ...extractImagePaths(params),
     ...extractImagePaths(output),
   ];
-  // de-dupe preserving order
   const imagePaths = [...new Set(candidates)];
   let emittedImages = 0;
   const prefer =
     String(opts.toolName || '').toLowerCase() === 'generate_image' || imagePaths.length > 0;
 
+  const imageOpts: FileToAcpImageOpts = {
+    cwd: opts.cwd,
+    additionalDirectories: opts.additionalDirectories,
+    stagingDir: opts.stagingDir,
+    maxBytes: opts.maxBytes,
+    enforceAllowlist: opts.enforceAllowlist,
+  };
+
   if (prefer) {
     for (const p of imagePaths) {
-      const img = fileToAcpImageBlock(p);
+      const img = fileToAcpImageBlock(p, imageOpts);
       if (img) {
         content.push({ type: 'content', content: img });
         emittedImages++;
-      } else if (fs.existsSync(p)) {
-        // oversized or unreadable — note path only (already in textOut usually)
-        content.push({
-          type: 'content',
-          content: {
-            type: 'text',
-            text: `[agy-acp] image at ${p} (not inlined; missing or >2MB)`,
-          },
-        });
+      } else {
+        // Outside allowlist / missing / oversized — note only if file exists under no-enforce
+        // or was denied; keep a short note when path looked real but was skipped.
+        const exists =
+          opts.cwd
+            ? (() => {
+                try {
+                  const r = resolveAgainstCwd(p, opts.cwd!);
+                  return r ? fs.existsSync(r) : false;
+                } catch {
+                  return false;
+                }
+              })()
+            : fs.existsSync(p);
+        if (exists) {
+          content.push({
+            type: 'content',
+            content: {
+              type: 'text',
+              text: `[agy-acp] image at ${p} (not inlined; missing, >2MB, or outside session roots)`,
+            },
+          });
+        }
       }
     }
   }
