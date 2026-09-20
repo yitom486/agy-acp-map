@@ -1,3 +1,9 @@
+## v0.1.2.1 — docs (2026-09-20)
+
+- Document non-goals: no OneShot `-p` backend; no permission round-trip; no history replay in bridge.
+
+---
+
 ## v0.1.2 — disk SessionStore + resume rehydrate (2026-09-20)
 
 Lightweight on-disk session index for ACP `sessionId` ↔ agy `conversationId` mapping and launch-config snapshots. **Full transcript stays Client-side** (zustand / gateway). No history replay.

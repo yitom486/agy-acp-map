@@ -273,6 +273,13 @@ See also `docs/AGY_ACP_MAP_ANALYSIS.zh-CN.md` (analysis kept; P0 items addressed
 | `session/close` | Kill child, drop memory; **keep** disk row (unless `AGY_ACP_DELETE_ON_CLOSE=1`) |
 | History | Never emits past turns on resume |
 
+## Non-goals / 明确不做
+
+- **OneShot `-p` backend**: not planned. Continuous ACP sessions use persistent `stream-json` only. Use the `agy` CLI directly for one-off CI/`-p` scripts.
+- **OneShot `-p` 后端**：不做。ACP 连续会话只走常驻 `stream-json`；一次性脚本请直接用 `agy -p`。
+- **Interactive ACP permission round-trip**：CLI stream-json 不支持；用 safety 三档 + settings allow。
+- **History replay / `session/load` 重放**：不把全文存 bridge；Client（zustand/Zed）自管 transcript，bridge 只做 id 级 `resume`。
+
 ## Limitations / 限制
 
 - MCP servers from `session/new` ignored (agy has its own).
