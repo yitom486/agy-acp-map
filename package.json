@@ -4,7 +4,7 @@
   "description": "Universal ACP v1/v2 bridge for Google Antigravity CLI (agy) supporting Zed, Cursor, and Electron Studio",
   "type": "module",
   "bin": {
-    "agy-acp": "./dist/bin.js"
+    "agy-acp": "dist/bin.js"
   },
   "main": "./dist/index.js",
   "module": "./dist/index.js",
@@ -52,7 +52,7 @@
   "author": "yitom",
   "repository": {
     "type": "git",
-    "url": "https://github.com/yitom486/agy-acp-map"
+    "url": "git+https://github.com/yitom486/agy-acp-map.git"
   },
   "license": "MIT",
   "devDependencies": {
