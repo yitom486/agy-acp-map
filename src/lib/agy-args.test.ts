@@ -15,11 +15,11 @@ import {
 } from './agy-args.ts';
 
 describe('buildAgyArgs', () => {
-  test('first spawn omits --conversation; safe defaults', () => {
+  test('first spawn omits --conversation; autonomous defaults', () => {
     const args = buildAgyArgs({ cwd: '/tmp/proj' }, {});
     expect(args.includes('--conversation')).toBe(false);
-    expect(args.includes('--dangerously-skip-permissions')).toBe(false);
-    expect(args.includes('--sandbox')).toBe(false);
+    expect(args.includes('--dangerously-skip-permissions')).toBe(true);
+    expect(args.includes('--sandbox')).toBe(true);
     expect(args.includes('--disable-slash-commands')).toBe(true);
     expect(args[args.indexOf('--print-timeout') + 1]).toBe('0');
     expect(args.slice(0, 6)).toEqual([
@@ -145,11 +145,11 @@ describe('resolveSafety three tiers', () => {
     expect(SAFETY_TIERS).toEqual(['safe', 'autonomous', 'autonomous-unsandboxed']);
   });
 
-  test('safe (default): no skip, no sandbox', () => {
+  test('autonomous (default): skip + sandbox', () => {
     expect(resolveSafety({}, {})).toEqual({
-      safety: 'safe',
-      skipPermissions: false,
-      sandbox: false,
+      safety: 'autonomous',
+      skipPermissions: true,
+      sandbox: true,
     });
     expect(resolveSafety({ safety: 'safe' }, {})).toEqual({
       safety: 'safe',
@@ -232,6 +232,11 @@ describe('resolveSafety three tiers', () => {
       skipPermissions: true,
       sandbox: true,
     });
+    expect(resolveSafety({}, {})).toEqual({
+      safety: 'autonomous',
+      skipPermissions: true,
+      sandbox: true,
+    });
     expect(resolveSafety({}, { AGY_ACP_SKIP_PERMISSIONS: '0' })).toEqual({
       safety: 'safe',
       skipPermissions: false,
@@ -272,9 +277,10 @@ describe('resolveSafety three tiers', () => {
   });
 
   test('resolveSkipPermissions / resolveSandbox wrappers', () => {
-    expect(resolveSkipPermissions({}, {})).toBe(false);
+    expect(resolveSkipPermissions({}, {})).toBe(true);
     expect(resolveSkipPermissions({ safety: 'autonomous' }, {})).toBe(true);
     expect(resolveSkipPermissions({ safety: 'autonomous-unsandboxed' }, {})).toBe(true);
+    expect(resolveSandbox({}, {})).toBe(true);
     expect(resolveSandbox({ safety: 'autonomous' }, {})).toBe(true);
     expect(resolveSandbox({ safety: 'safe' }, {})).toBe(false);
     expect(resolveSandbox({ safety: 'autonomous-unsandboxed' }, {})).toBe(false);

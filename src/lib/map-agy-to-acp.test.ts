@@ -122,6 +122,47 @@ describe('mapAgyEvent', () => {
     ).toBe(true);
   });
 
+  test('toolCallId stable within turn, unique across turns', () => {
+    let state = createMapperState();
+    const toolEvt = {
+      event: 'step_update',
+      step_update: {
+        step_index: 1,
+        step_type: 'tool',
+        state: 'ACTIVE',
+        tool_name: 'view_file',
+        tool_info: { name: 'view_file', parameters: { path: 'a.ts', line: 12 } },
+      },
+    };
+    let r = mapAgyEvent('s1', toolEvt, state);
+    state = r.state;
+    const id1 = r.notifications[0]!.params.update.toolCallId as string;
+    expect(id1).toBe('agy-t0-s1');
+    expect(r.notifications[0]!.params.update.name).toBe('view_file');
+    expect(r.notifications[0]!.params.update.title).toContain('a.ts');
+    expect(r.notifications[0]!.params.update.locations).toEqual([{ path: 'a.ts', line: 12 }]);
+    // DONE in same turn reuses id
+    r = mapAgyEvent('s1', {
+      event: 'step_update',
+      step_update: {
+        step_index: 1,
+        step_type: 'tool',
+        state: 'DONE',
+        tool_name: 'view_file',
+        tool_info: { name: 'view_file', parameters: { path: 'a.ts' }, output: 'ok' },
+      },
+    }, state);
+    state = r.state;
+    const done = r.notifications.find((n) => n.params.update.sessionUpdate === 'tool_call_update');
+    expect(done!.params.update.toolCallId).toBe(id1);
+    // Next turn same step_index gets a fresh id so Zed never merges cards
+    state = resetTurnState(state);
+    r = mapAgyEvent('s1', toolEvt, state);
+    const id2 = r.notifications[0]!.params.update.toolCallId as string;
+    expect(id2).not.toBe(id1);
+    expect(id2).toBe('agy-t1-s1');
+  });
+
   test('result SUCCESS → idle end_turn + usage', () => {
     let state = createMapperState();
     const { notifications, state: next } = mapAgyEvent('s1', {

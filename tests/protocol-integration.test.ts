@@ -153,8 +153,9 @@ describe('Simulated Integration Tests (Offline Mock CLI)', () => {
         (u) => u.sessionUpdate === 'tool_call' && u.status === 'in_progress',
       );
       expect(initialToolCall).toBeDefined();
-      expect(initialToolCall.toolCallId).toBe('agy-tool-1');
-      expect(initialToolCall.title).toBe('read_file');
+      expect(initialToolCall.toolCallId).toBe('agy-t1-s1');
+      expect(initialToolCall.name).toBe('read_file');
+      expect(initialToolCall.title).toContain('package.json');
 
       // Assert subsequent tool_call_update with status completed is emitted
       const completedUpdate = updates.find(

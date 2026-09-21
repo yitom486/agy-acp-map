@@ -26,6 +26,11 @@ describe('parseSoftDeny', () => {
     expect(got[0]!.tool).toBe('run_command');
     expect(got[0]!.allowRule).toContain('command');
   });
+
+  test('sandbox terminal restriction stderr is surfaced separately', () => {
+    const got = parseSoftDeny('sandbox blocked network access for command curl https://example.com');
+    expect(got.some((d) => d.source === 'stderr-sandbox')).toBe(true);
+  });
 });
 
 describe('parseSoftDenyFromEvent', () => {
@@ -74,6 +79,25 @@ describe('parseSoftDenyFromEvent', () => {
     expect(got.length).toBe(1);
     expect(got[0]!.tool).toBe('run_command');
   });
+
+  test('tool ERROR with sandbox wording is tool-sandbox, not permission', () => {
+    const got = parseSoftDenyFromEvent({
+      event: 'step_update',
+      step_update: {
+        step_type: 'tool',
+        state: 'ERROR',
+        tool_name: 'run_command',
+        tool_info: {
+          name: 'run_command',
+          error: 'blocked by sandbox: network disabled for curl',
+          parameters: { CommandLine: 'curl https://example.com' },
+        },
+      },
+    });
+    expect(got.length).toBe(1);
+    expect(got[0]!.source).toBe('tool-sandbox');
+    expect(got[0]!.allowRule).toContain('curl');
+  });
 });
 
 describe('merge + format', () => {
@@ -90,5 +114,13 @@ describe('merge + format', () => {
     ]);
     expect(msg).toContain('allow-rule=command(<target>)');
     expect(msg).toContain('tool=run_command');
+  });
+
+  test('formatSandboxNote suggests unsandboxed retry', () => {
+    const msg = formatSoftDenyMessage([
+      { tool: 'run_command', allowRule: 'command("curl https://example.com")', source: 'tool-sandbox' },
+    ]);
+    expect(msg).toContain('autonomous-unsandboxed');
+    expect(msg).toContain('terminal restrictions');
   });
 });

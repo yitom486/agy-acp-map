@@ -163,14 +163,20 @@ export type SafetyResolveInput = {
 /**
  * Central three-tier safety resolution.
  *
+ * Note on `--sandbox`: agy documents it only as "terminal restrictions enabled".
+ * It is NOT verified to mean offline. Assumed split:
+ * - model API + built-in cloud search tools: unaffected;
+ * - terminal network (`curl`, `Invoke-WebRequest`, `git clone`, `npm install`): may be blocked.
+ * Use two probes to confirm: built-in search vs `run_command` network.
+ *
  * Tiers:
- *   safe (default)              — no skip-permissions; sandbox only if explicitly true
- *   autonomous                  — skip-permissions; default --sandbox unless sandbox:false
+ *   safe                        — no skip-permissions; sandbox only if explicitly true
+ *   autonomous (default)        — skip-permissions; default --sandbox unless sandbox:false
  *   autonomous-unsandboxed      — skip-permissions; NEVER --sandbox
  *
  * Inputs:
  *   session.safety / AGY_ACP_SAFETY
- *   AGY_ACP_SKIP_PERMISSIONS=1 ≈ autonomous if safety unset; =0 ≈ safe
+ *   AGY_ACP_SKIP_PERMISSIONS=0 ≈ safe if safety unset; otherwise autonomous
  *   explicit session.skipPermissions overrides the skip flag only
  *   explicit session.sandbox / AGY_ACP_SANDBOX override sandbox except unsandboxed tier
  */
@@ -187,7 +193,7 @@ export function resolveSafety(
       const skip = !(envSkip === '0' || envSkip === 'false' || envSkip === 'no');
       safety = skip ? 'autonomous' : 'safe';
     } else {
-      safety = 'safe';
+      safety = 'autonomous';
     }
   }
 
@@ -453,7 +459,7 @@ export function applyConfigOption(
  * they are used as-is. Otherwise resolveSafety(session) fills them from safety tier.
  *
  * Defaults:
- *   - safety: safe → skipPermissions false, sandbox false
+ *   - safety: autonomous → skipPermissions true, sandbox true
  *   - disableSlashCommands: true
  *   - printTimeout: "0"
  */

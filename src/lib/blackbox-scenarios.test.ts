@@ -56,8 +56,11 @@ describe('AgyAcpService Black-box Scenarios (Offline Simulation)', () => {
       // Verify tool start update (in_progress)
       const toolStartUpdate = updates.find((u) => u.sessionUpdate === 'tool_call_update' && u.status === 'in_progress');
       expect(toolStartUpdate).toBeDefined();
-      expect(toolStartUpdate.toolCallId).toBe('agy-tool-1');
-      expect(toolStartUpdate.title).toBe('read_file');
+      expect(toolStartUpdate.toolCallId).toBe('agy-t1-s1');
+      expect(toolStartUpdate.name ?? toolStartUpdate.title).toContain('read_file');
+      // Human-readable title + immediate preview so Zed never shows a blank card
+      expect(toolStartUpdate.title).toContain('package.json');
+      expect(JSON.stringify(toolStartUpdate.content ?? '')).toContain('package.json');
 
       // Verify tool completion update with output (completed)
       const toolDoneUpdate = updates.find((u) => u.sessionUpdate === 'tool_call_update' && u.status === 'completed');
@@ -189,6 +192,28 @@ describe('AgyAcpService Black-box Scenarios (Offline Simulation)', () => {
       await service.closeSession({ sessionId });
       const stagingDir = path.join(testCwd, '.agy-staging', sessionId);
       expect(fs.existsSync(stagingDir)).toBe(false);
+    }
+  });
+
+  test('Connect-time warm-up: newSession pre-spawns writable agy, close kills it', async () => {
+    const service = new AgyAcpService();
+    const { sessionId } = await service.newSession({ cwd: testCwd, protocolVersion: 2 });
+    try {
+      // Warm-up is fire-and-forget: poll briefly for a writable child.
+      const deadline = Date.now() + 5000;
+      while (!service.core.sessions.get(sessionId)?.proc.isWritable() && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      expect(service.core.sessions.get(sessionId)?.proc.isWritable()).toBe(true);
+      // First prompt reuses the warmed process (no cold spawn churn).
+      const outcome = await service.promptSession({
+        sessionId,
+        prompt: [{ type: 'text', text: 'Please read package.json [test:tool]' }],
+      }, () => {});
+      expect(outcome.stopReason).toBe('end_turn');
+    } finally {
+      await service.closeSession({ sessionId });
+      expect(service.core.sessions.get(sessionId)).toBeUndefined();
     }
   });
 

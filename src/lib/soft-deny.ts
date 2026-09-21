@@ -8,6 +8,13 @@
  * Also accepts explicit key=value fragments: tool=, allow-rule=, path=
  * And stream-json: tool ERROR with permission/denied wording + result.denied_actions
  *
+ * Sandbox note: `agy --help` documents `--sandbox` only as "terminal restrictions
+ * enabled". It does NOT state offline. Convention used here:
+ * - model API + built-in search tools: assumed unaffected;
+ * - terminal network (`curl`, `Invoke-WebRequest`, ...) may be blocked and is
+ *   surfaced separately with `source: *-sandbox` so callers can suggest
+ *   `safety: autonomous-unsandboxed` / `sandbox: false` retry.
+ *
  * v0.1.3: do NOT treat generic tool ERROR as soft-deny (tighten parseSoftDenyFromEvent).
  */
 
@@ -88,11 +95,29 @@ export function parseSoftDeny(stderrText: string): SoftDenyInfo[] {
     }
   }
 
+  // sandbox / terminal-restriction blocks (distinct from permission allow-rules)
+  for (const m of stderrText.matchAll(
+    /sandbox[^\n]{0,200}?(blocked|restricted|denied|not allowed|network|terminal restriction)/gi,
+  )) {
+    void m;
+    push('run_command', 'command(<target>)', undefined, 'stderr-sandbox');
+    break;
+  }
+  for (const m of stderrText.matchAll(
+    /terminal restriction[^\n]{0,200}?(blocked|restricted|denied|not allowed)/gi,
+  )) {
+    void m;
+    push('run_command', 'command(<target>)', undefined, 'stderr-sandbox');
+    break;
+  }
+
   return found;
 }
 
 const PERMISSION_HINT =
   /permission|denied|auto-denied|allow-rule|not allowed|unauthorized|access denied/i;
+
+const SANDBOX_HINT = /sandbox|terminal restriction|blocked by (sandbox|policy)|network.*(blocked|restricted|disabled)|EACCES|EPERM/i;
 
 /**
  * Extract soft-denies from a single agy NDJSON event (tool ERROR / result.denied_actions).
@@ -117,7 +142,9 @@ export function parseSoftDenyFromEvent(event: unknown): SoftDenyInfo[] {
             : err
               ? JSON.stringify(err)
               : '';
-      // Tighten: require permission/denied wording — do NOT treat bare ERROR as soft-deny
+      // Tighten: require permission/denied wording — do NOT treat bare ERROR as soft-deny.
+      // Sandbox blocks are reported separately so UI can suggest unsandboxed retry
+      // instead of an allow-rule.
       if (PERMISSION_HINT.test(msg)) {
         const params = (toolInfo.parameters || {}) as Record<string, unknown>;
         const cmd =
@@ -132,6 +159,22 @@ export function parseSoftDenyFromEvent(event: unknown): SoftDenyInfo[] {
           tool: toolName,
           allowRule,
           source: 'tool-error',
+        });
+      } else if (SANDBOX_HINT.test(msg)) {
+        const params = (toolInfo.parameters || {}) as Record<string, unknown>;
+        const cmd =
+          (params.CommandLine as string | undefined) ||
+          (params.command as string | undefined) ||
+          undefined;
+        out.push({
+          tool: toolName,
+          allowRule:
+            toolName === 'run_command' || /command/i.test(toolName)
+              ? cmd
+                ? `command(${JSON.stringify(cmd)})`
+                : 'command(<target>)'
+              : defaultAllowRule(toolName),
+          source: 'tool-sandbox',
         });
       }
     }
@@ -179,6 +222,10 @@ export function mergeSoftDenies(...lists: (SoftDenyInfo[] | undefined)[]): SoftD
 
 /**
  * Format soft-denies into a short agent-facing note.
+ * Sandbox sources get a separate hint: built-in search is expected to keep
+ * working, terminal network (`curl`, `Invoke-WebRequest`, ...) may be blocked —
+ * retry the same prompt with `safety: autonomous-unsandboxed` / `sandbox: false`
+ * to distinguish the two paths.
  */
 export function formatSoftDenyMessage(denies: SoftDenyInfo[]): string {
   if (!denies?.length) return '';
@@ -193,8 +240,13 @@ export function formatSoftDenyMessage(denies: SoftDenyInfo[]): string {
     lines.push(bits.join(' '));
   }
   lines.push(
-    'Or set AGY_ACP_SAFETY=autonomous / AGY_ACP_SKIP_PERMISSIONS=1 (safe is the bridge default).',
+    'Or set AGY_ACP_SAFETY=safe / AGY_ACP_SKIP_PERMISSIONS=0 to re-enable permission checks (autonomous + sandbox is the bridge default).',
   );
+  if (denies.some((d) => d.source?.includes('sandbox'))) {
+    lines.push(
+      'Sandbox note: --sandbox = terminal restrictions, not verified offline. Built-in search may still work; if `curl`/`Invoke-WebRequest` failed, retry once with safety=autonomous-unsandboxed (or sandbox:false) to confirm it is a sandbox network block.',
+    );
+  }
   return lines.join('\n');
 }
 

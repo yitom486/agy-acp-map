@@ -18,6 +18,10 @@ export interface MapperState {
   agentMessageIds: Map<number, string>;
   thoughtMessageIds?: Map<number, string>;
   toolSeen: Set<number>;
+  /** Stable per-turn toolCallIds: stepIndex -> id (prevents cross-turn merge in Zed). */
+  toolIds: Map<number, string>;
+  /** Monotonic turn counter; part of toolCallId so step_index reuse never collides. */
+  turnSeq: number;
   lastStopReason?: string;
   turnDone?: boolean;
   emittedImageUris: Set<string>;
@@ -43,6 +47,8 @@ export function createMapperState(richRoots?: FileToAcpImageOpts): MapperState {
     agentMessageIds: new Map(),
     thoughtMessageIds: new Map(),
     toolSeen: new Set(),
+    toolIds: new Map(),
+    turnSeq: 0,
     lastStopReason: undefined,
     turnDone: false,
     emittedImageUris: new Set(),
@@ -52,19 +58,30 @@ export function createMapperState(richRoots?: FileToAcpImageOpts): MapperState {
   };
 }
 
-/** Reset per-turn tracking (keep conversationId / tools / richRoots). */
+/** Reset per-turn tracking (keep conversationId / tools / richRoots / turnSeq+1). */
 export function resetTurnState(state: MapperState): MapperState {
   return {
     ...state,
     agentMessageIds: new Map(),
     thoughtMessageIds: new Map(),
     toolSeen: new Set(),
+    toolIds: new Map(),
+    turnSeq: (state.turnSeq ?? 0) + 1,
     lastStopReason: undefined,
     turnDone: false,
     emittedImageUris: new Set(),
     emittedTextDelta: false,
     emittedThoughtDelta: false,
   };
+}
+
+/** Stable unique toolCallId per turn+step. Native agents use UUIDs; agy reuses step_index. */
+function toolCallIdForStep(state: MapperState, stepIndex: number): string {
+  const existing = state.toolIds.get(stepIndex);
+  if (existing) return existing;
+  const id = `agy-t${state.turnSeq ?? 0}-s${stepIndex}`;
+  state.toolIds.set(stepIndex, id);
+  return id;
 }
 
 export function guessToolKind(name: unknown): string {
@@ -118,6 +135,104 @@ function agentThoughtIdForStep(state: MapperState, stepIndex: number) {
     state.thoughtMessageIds.set(stepIndex, `msg_thought_agy_${stepIndex}`);
   }
   return state.thoughtMessageIds.get(stepIndex)!;
+}
+
+function humanizeToolName(name: string): string {
+  return String(name || 'tool')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function commandPreview(params: unknown, maxLen = 80): string | undefined {
+  if (!params || typeof params !== 'object') return undefined;
+  const p = params as Record<string, unknown>;
+  const raw =
+    (p.CommandLine as unknown) ?? (p.command as unknown) ?? (p.cmd as unknown) ??
+    (p.script as unknown) ?? (p.code as unknown);
+  if (typeof raw !== 'string' || !raw.trim()) return undefined;
+  const oneLine = raw.trim().replace(/\s+/g, ' ');
+  return oneLine.length > maxLen ? oneLine.slice(0, maxLen - 1) + '…' : oneLine;
+}
+
+function filePreview(params: unknown): string | undefined {
+  if (!params || typeof params !== 'object') return undefined;
+  const p = params as Record<string, unknown>;
+  const raw =
+    (p.path as unknown) ?? (p.file as unknown) ?? (p.filePath as unknown) ??
+    (p.filename as unknown) ?? (p.uri as unknown);
+  if (typeof raw !== 'string' || !raw.trim()) return undefined;
+  const t = raw.trim();
+  return t.length > 80 ? '…' + t.slice(-79) : t;
+}
+
+/** Human-readable title so Zed never renders a lonely `run_command` card. */
+function toolTitle(toolName: string, params: unknown): string {
+  const cmd = commandPreview(params);
+  if (cmd) {
+    const base = /run_command|command/i.test(toolName) ? 'Run' : humanizeToolName(toolName);
+    return `${base}: ${cmd}`;
+  }
+  const file = filePreview(params);
+  if (file) {
+    const n = toolName.toLowerCase();
+    const verb = n.includes('write') || n.includes('edit') || n.includes('replace') ? 'Edit' : 'Read';
+    return `${verb}: ${file}`;
+  }
+  return humanizeToolName(toolName);
+}
+
+/** Immediate preview content for ACTIVE tools — avoids blank in_progress cards. */
+function toolPreviewContent(toolName: string, params: unknown): { type: 'content'; content: { type: 'text'; text: string } } | null {
+  const cmd = commandPreview(params);
+  if (cmd) return { type: 'content', content: { type: 'text', text: `$ ${cmd}` } };
+  const file = filePreview(params);
+  if (file) return { type: 'content', content: { type: 'text', text: file } };
+  return null;
+}
+
+function linePreview(params: unknown): number | undefined {
+  if (!params || typeof params !== 'object') return undefined;
+  const p = params as Record<string, unknown>;
+  const raw =
+    (p.line as unknown) ?? (p.line_number as unknown) ?? (p.lineNumber as unknown) ??
+    (p.start_line as unknown) ?? (p.startLine as unknown) ?? (p.lineno as unknown);
+  const n = typeof raw === 'string' ? Number.parseInt(raw, 10) : (raw as number);
+  if (Number.isInteger(n) && (n as number) >= 0) return n as number;
+  return undefined;
+}
+
+/** File locations for follow-along (view/edit tools). Zed uses this to jump to files. */
+function toolLocations(toolName: string, params: unknown): { path: string; line?: number }[] | undefined {
+  const file = filePreview(params);
+  if (!file) return undefined;
+  const n = toolName.toLowerCase();
+  if (
+    n.includes('view') || n.includes('read') || n.includes('write') ||
+    n.includes('edit') || n.includes('replace') || n === 'list_dir'
+  ) {
+    if (/^[A-Za-z]:[\\/]|^\/|^\\\\/.test(file) || !file.includes(' ')) {
+      const line = linePreview(params);
+      return line !== undefined ? [{ path: file, line }] : [{ path: file }];
+    }
+  }
+  return undefined;
+}
+
+function extractThought(s: Record<string, unknown>): string | undefined {
+  const candidates = [
+    s.thought_delta,
+    (s.agent_response as any)?.thought_delta,
+    (s as any).thought,
+    (s as any).reasoning,
+    (s as any).thinking,
+    (s as any).reasoning_delta,
+  ];
+  for (const c of candidates) {
+    if (typeof c === 'string' && c.length > 0) return c;
+  }
+  return undefined;
 }
 
 /** Format or adapt updates according to client ACP protocol version (v1 vs v2). */
@@ -259,7 +374,7 @@ export function mapAgyEvent(
         }
       }
 
-      const thought = s.thought_delta || (s.agent_response as any)?.thought_delta;
+      const thought = extractThought(s);
       if (typeof thought === 'string' && thought.length > 0) {
         state.emittedThoughtDelta = true;
         const messageId = agentThoughtIdForStep(state, stepIndex);
@@ -278,7 +393,7 @@ export function mapAgyEvent(
     if (stepType === 'tool') {
       const toolInfo = (s.tool_info || {}) as Record<string, unknown>;
       const toolName = (s.tool_name as string) || (toolInfo.name as string) || 'tool';
-      const toolCallId = `agy-tool-${stepIndex}`;
+      const toolCallId = toolCallIdForStep(state, stepIndex);
       const params = toolInfo.parameters;
       const output = toolInfo.output;
       const error = toolInfo.error;
@@ -290,14 +405,18 @@ export function mapAgyEvent(
       if (!state.toolSeen.has(stepIndex)) {
         state.toolSeen.add(stepIndex);
         const status = isTerminal ? (failed ? 'failed' : 'completed') : 'in_progress';
+        const title = toolTitle(toolName, params);
+        const locations = toolLocations(toolName, params);
         const toolCall: Record<string, unknown> = {
           sessionUpdate: 'tool_call',
           toolCallId,
-          title: toolName,
+          title,
+          name: toolName,
           kind,
           status,
         };
         if (params !== undefined) toolCall.rawInput = params;
+        if (locations) toolCall.locations = locations;
 
         if (isTerminal) {
           const textOut = stringifyOut(output, error);
@@ -308,14 +427,22 @@ export function mapAgyEvent(
           notifications.push(notify(sessionId, toolCall));
           emitImageAgentChunks(sessionId, state, rich.imagePaths, notifications);
         } else {
+          // ACTIVE preview: never leave Zed with a blank card while the tool runs.
+          const preview = toolPreviewContent(toolName, params);
+          if (preview) toolCall.content = [preview];
           notifications.push(notify(sessionId, toolCall));
         }
       } else if (isTerminal) {
+        const title = toolTitle(toolName, params);
+        const locations = toolLocations(toolName, params);
         const update: Record<string, unknown> = {
           sessionUpdate: 'tool_call_update',
           toolCallId,
+          title,
+          name: toolName,
           status: failed ? 'failed' : 'completed',
         };
+        if (locations) update.locations = locations;
         const textOut = stringifyOut(output, error);
         const rich = buildRichToolContent(textOut, params, output, richOpts);
         if (rich.content.length) update.content = rich.content;
@@ -323,6 +450,18 @@ export function mapAgyEvent(
         if (error !== undefined) update.rawError = error;
         notifications.push(notify(sessionId, update));
         emitImageAgentChunks(sessionId, state, rich.imagePaths, notifications);
+      } else {
+        // Duplicate ACTIVE (heartbeat): refresh title/preview so UI doesn't look stuck.
+        const update: Record<string, unknown> = {
+          sessionUpdate: 'tool_call_update',
+          toolCallId,
+          title: toolTitle(toolName, params),
+          name: toolName,
+          status: 'in_progress',
+        };
+        const preview = toolPreviewContent(toolName, params);
+        if (preview) update.content = [preview];
+        notifications.push(notify(sessionId, update));
       }
       return { notifications, state };
     }

@@ -113,7 +113,7 @@ describe('Wire-level Stdio JSON-RPC Integration (Full sdk-server Process)', () =
       // Rule: Tool calls MUST follow the ACP v1 lifecycle: tool_call -> tool_call_update
       const toolCallEvents = sessionUpdates.filter((u) => u.sessionUpdate === 'tool_call');
       expect(toolCallEvents.length).toBeGreaterThanOrEqual(1);
-      expect(toolCallEvents[0].toolCallId).toBe('agy-tool-1');
+      expect(toolCallEvents[0].toolCallId).toBe('agy-t1-s1');
       expect(toolCallEvents[0].status).toBe('in_progress');
 
       const toolUpdateEvents = sessionUpdates.filter((u) => u.sessionUpdate === 'tool_call_update');

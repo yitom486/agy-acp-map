@@ -83,6 +83,112 @@ export class AgySessionCore {
     return this.catalogPromise;
   }
 
+  /** Warm-up toggle: AGY_ACP_WARMUP=0/false/no disables connect-time pre-spawn. */
+  warmupEnabled(): boolean {
+    const v = process.env.AGY_ACP_WARMUP;
+    if (v === undefined || v === '') return true;
+    const s = v.trim().toLowerCase();
+    return !(s === '0' || s === 'false' || s === 'no' || s === 'off');
+  }
+
+  /** Shared spawn-target builder so warm-up and promptTurn launch identical agy. */
+  buildSpawnTarget(session: SdkSession): { bin: string; args: string[] } {
+    const skip = resolveSkipPermissions(session);
+    const disableSlash = resolveDisableSlashCommands(session);
+    const printTimeout = resolvePrintTimeout(session);
+    const safety = resolveSafety(session);
+    const args = buildAgyArgs({
+      cwd: session.cwd,
+      additionalDirectories: session.additionalDirectories,
+      conversationId: session.conversationId || session.mapper?.conversationId,
+      model: session.model,
+      effort: session.effort,
+      mode: session.mode,
+      agent: session.agent,
+      sandbox: session.sandbox,
+      jsonSchema: session.jsonSchema,
+      safety: safety.safety,
+      skipPermissions: skip,
+      disableSlashCommands: disableSlash,
+      printTimeout,
+    });
+    const rawBin = process.env.AGY_BIN;
+    let bin = rawBin && rawBin !== 'undefined' && rawBin !== 'null' ? rawBin : 'agy';
+    if (bin === 'agy' || bin === 'agy.exe') {
+      const geminiBin = path.join(
+        process.env.USERPROFILE || process.env.HOME || '',
+        '.gemini',
+        'bin',
+        process.platform === 'win32' ? 'agy.exe' : 'agy',
+      );
+      if (fs.existsSync(geminiBin)) {
+        bin = geminiBin;
+      }
+    }
+    let execBin = bin;
+    let execArgs = args;
+    if (/\.(js|cjs|mjs|ts)$/i.test(bin)) {
+      execBin = process.execPath;
+      execArgs = [bin, ...args];
+    }
+    return { bin: execBin, args: execArgs };
+  }
+
+  /**
+   * Connect-time warm-up: pull agy up in the background right after
+   * session/new|resume so the first prompt reuses a writable process.
+   * Fire-and-forget — never blocks the new/resume response. First real
+   * prompt attaches via setCallbacks; close/delete/cancel still kill.
+   */
+  warmupSession(sessionId: string): void {
+    if (!this.warmupEnabled()) return;
+    const session = this.sessions.get(sessionId);
+    if (!session || session.deleted || session.busy) return;
+    if (session.proc.isWritable()) return;
+    const target = this.buildSpawnTarget(session);
+    console.error(`[ACP-SDK] warmup: pre-spawning agy for sid: ${sessionId}`);
+    void session.proc
+      .spawn({
+        bin: target.bin,
+        args: target.args,
+        cwd: session.cwd,
+        onEvent: (event: any) => {
+          if (session.deleted || !this.sessions.has(sessionId)) return;
+          try {
+            const { state } = mapAgyEvent(session.sessionId, event, session.mapper);
+            session.mapper = state;
+            if (state.conversationId && state.conversationId !== session.conversationId) {
+              session.conversationId = state.conversationId;
+              this.persistSession(session);
+            }
+          } catch {
+            /* warm-up mapping must never throw */
+          }
+        },
+        onError: (err: Error) => {
+          console.error(`[ACP-SDK] warmup error (sid: ${sessionId}):`, err.message);
+        },
+        onStderr: (line: string) => {
+          session.stderrBuf += line + '\n';
+        },
+        onExit: (code: number | null) => {
+          console.error(`[ACP-SDK] warmup exit (sid: ${sessionId}): code: ${code}`);
+        },
+      })
+      .catch((err: any) => {
+        console.error(`[ACP-SDK] warmup spawn failed (sid: ${sessionId}):`, err?.message);
+      });
+  }
+
+  /** Kill every live child (bridge shutdown path). Clients should still close/delete per session. */
+  async shutdown(): Promise<void> {
+    const kills: Promise<void>[] = [];
+    for (const session of this.sessions.values()) {
+      kills.push(session.proc.kill().catch(() => undefined));
+    }
+    await Promise.all(kills);
+  }
+
   persistSession(session: SdkSession, opts?: { throwOnError?: boolean }): void {
     if (session.deleted || !this.sessions.has(session.sessionId)) {
       return;
@@ -233,6 +339,8 @@ export class AgySessionCore {
     this.applyCatalogDefaults(session, discovery);
     this.sessions.set(sessionId, session);
     this.persistSession(session);
+    // Connect-time warm-up: pull agy up now so first prompt doesn't pay cold spawn.
+    this.warmupSession(sessionId);
 
     return {
       session,
@@ -378,6 +486,8 @@ export class AgySessionCore {
     const discovery = await this.getDiscovery();
     this.applyCatalogDefaults(session, discovery);
     this.persistSession(session);
+    // Re-attached sessions also get a warm process if none is alive.
+    this.warmupSession(sessionId);
 
     return {
       session,
@@ -659,7 +769,6 @@ export class AgySessionCore {
       `[ACP-SDK] promptTurn: sid: ${sessionId}, v: ${protocolVersion}, isWritable: ${session.proc.isWritable()}, model: ${session.model}, text: "${text.slice(0, 60)}"`,
     );
 
-    const messageId = `msg_user_${randomUUID().slice(0, 8)}`;
     let visibleAssistantText = '';
     let historyTurnEligible = true;
 
@@ -679,13 +788,23 @@ export class AgySessionCore {
       }
     };
 
-    queue.enqueue(async () => {
-      await notifyClient({
-        sessionUpdate: 'user_message',
-        messageId,
-        content: [{ type: 'text', text }],
+    // v1 SessionUpdate has no `user_message` (only chunks) — echoing it breaks
+    // strict v1 validation and looks stuck. v2 DOES support full `user_message`
+    // and its tests/clients expect the echo, so keep it for v2 only.
+    if (protocolVersion >= 2) {
+      const messageId = `msg_user_${randomUUID().slice(0, 8)}`;
+      queue.enqueue(async () => {
+        try {
+          await notifyClient({
+            sessionUpdate: 'user_message',
+            messageId,
+            content: [{ type: 'text', text }],
+          });
+        } catch (err) {
+          console.error(`[ACP-SDK] notify user_message failed (sid: ${sessionId}):`, (err as Error)?.message);
+        }
       });
-    });
+    }
 
     return new Promise<{ stopReason: string }>((resolve) => {
       let isSettled = false;
@@ -765,13 +884,24 @@ export class AgySessionCore {
 
           for (const n of notifications) {
             const u = n.params?.update as any;
-            if (u) {
-              captureVisibleAssistantText(u);
-              if (u.sessionUpdate === 'state_update' && u.state === 'idle') {
-                finish(u.stopReason || 'end_turn');
-                return;
+            if (!u) continue;
+            captureVisibleAssistantText(u);
+            if (u.sessionUpdate === 'state_update' && u.state === 'idle') {
+              // Forward idle before finishing so strict v2 clients never hang in running.
+              try {
+                await notifyClient(u);
+              } catch (err) {
+                console.error(`[ACP-SDK] notify idle failed (sid: ${sessionId}):`, (err as Error)?.message);
               }
+              finish(u.stopReason || 'end_turn');
+              return;
+            }
+            try {
               await notifyClient(u);
+            } catch (err) {
+              // Per-notification isolation: one slow/failing notify must not
+              // drop the rest of the batch and look like a stuck turn.
+              console.error(`[ACP-SDK] notify ${u.sessionUpdate} failed (sid: ${sessionId}):`, (err as Error)?.message);
             }
           }
         });
@@ -808,46 +938,19 @@ export class AgySessionCore {
         }
       };
 
-      const skip = resolveSkipPermissions(session);
-      const disableSlash = resolveDisableSlashCommands(session);
-      const printTimeout = resolvePrintTimeout(session);
       const safety = resolveSafety(session);
+      // Auto-pass contract: default autonomous must carry --dangerously-skip-permissions
+      // so agy never opens an interactive/native permission prompt mid-turn.
+      // Windows UAC popups come from the elevated command itself, never from this
+      // bridge (spawn uses windowsHide + piped stdio, no shell/runas) — keep
+      // --sandbox on to contain terminal side-effects.
+      console.error(
+        `[ACP-SDK] safety: sid: ${sessionId} safety=${safety.safety} skip=${safety.skipPermissions ? 1 : 0} sandbox=${safety.sandbox ? 1 : 0} warmed=${session.proc.isWritable() ? 1 : 0}`,
+      );
 
-      const args = buildAgyArgs({
-        cwd: session.cwd,
-        additionalDirectories: session.additionalDirectories,
-        conversationId: session.conversationId || session.mapper?.conversationId,
-        model: session.model,
-        effort: session.effort,
-        mode: session.mode,
-        agent: session.agent,
-        sandbox: session.sandbox,
-        jsonSchema: session.jsonSchema,
-        safety: safety.safety,
-        skipPermissions: skip,
-        disableSlashCommands: disableSlash,
-        printTimeout,
-      });
-
-      let bin = process.env.AGY_BIN || 'agy';
-      if (bin === 'agy' || bin === 'agy.exe') {
-        const geminiBin = path.join(
-          process.env.USERPROFILE || process.env.HOME || '',
-          '.gemini',
-          'bin',
-          process.platform === 'win32' ? 'agy.exe' : 'agy',
-        );
-        if (fs.existsSync(geminiBin)) {
-          bin = geminiBin;
-        }
-      }
-
-      let execBin = bin;
-      let execArgs = args;
-      if (/\.(js|cjs|mjs|ts)$/i.test(bin)) {
-        execBin = process.execPath;
-        execArgs = [bin, ...args];
-      }
+      const target = this.buildSpawnTarget(session);
+      const execBin = target.bin;
+      const execArgs = target.args;
 
       (async () => {
         try {
