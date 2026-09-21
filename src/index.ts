@@ -1,9 +1,9 @@
 /**
- * agy-acp-map: Official ACP v1/v2 Bridge for Google Antigravity CLI (agy).
+ * agy-acp-map: Universal ACP v1/v2 Bridge for Google Antigravity CLI (agy).
  * Primary entry point for library consumption in Node, Bun, and Electron.
  */
 
-// Official SDK Service & App Factory
+// Official SDK Service & App Factory (Facade)
 export {
   AgyAcpService,
   createAcpV1App,
@@ -11,8 +11,16 @@ export {
   createDualAcpApp,
   AGENT_INFO,
   BRIDGE_CAPABILITIES,
+  AgySessionCore,
+  AgyAcpV1Service,
+  AgyAcpV2Service,
   type SdkSession,
 } from './agent-sdk.ts';
+
+// Dedicated Protocol & Architecture Submodules
+export * as core from './core/index.ts';
+export * as v1 from './v1/index.ts';
+export * as v2 from './v2/index.ts';
 
 // Core Engine & Domain Modules
 export * from './lib/map-agy-to-acp.ts';

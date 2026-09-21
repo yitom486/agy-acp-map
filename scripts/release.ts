@@ -46,15 +46,18 @@ pkg.version = nextVersion;
 fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n', 'utf8');
 console.log(`[1/4] Updated package.json version to ${nextVersion}`);
 
-// 2. Sync src/agent-sdk.ts AGENT_INFO.version
-if (fs.existsSync(sdkPath)) {
-  let sdkContent = fs.readFileSync(sdkPath, 'utf8');
-  sdkContent = sdkContent.replace(
-    /version:\s*['"][0-9]+\.[0-9]+\.[0-9]+['"]/,
-    `version: '${nextVersion}'`
-  );
-  fs.writeFileSync(sdkPath, sdkContent, 'utf8');
-  console.log(`[2/4] Synchronized src/agent-sdk.ts AGENT_INFO.version to ${nextVersion}`);
+// 2. Sync src/core/types.ts and src/agent-sdk.ts AGENT_INFO.version
+const coreTypesPath = path.join(repoRoot, 'src', 'core', 'types.ts');
+for (const targetPath of [sdkPath, coreTypesPath]) {
+  if (fs.existsSync(targetPath)) {
+    let content = fs.readFileSync(targetPath, 'utf8');
+    content = content.replace(
+      /version:\s*['"][0-9]+\.[0-9]+\.[0-9]+['"]/,
+      `version: '${nextVersion}'`
+    );
+    fs.writeFileSync(targetPath, content, 'utf8');
+    console.log(`[2/4] Synchronized ${path.relative(repoRoot, targetPath)} AGENT_INFO.version to ${nextVersion}`);
+  }
 }
 
 // 3. Run build and tests
