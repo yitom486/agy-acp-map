@@ -101,6 +101,7 @@ describe('mapAgyEvent', () => {
       },
     }, state);
     state = r.state;
+    expect(r.notifications[0]!.params.update.sessionUpdate).toBe('tool_call');
     expect(r.notifications[0]!.params.update.status).toBe('in_progress');
     r = mapAgyEvent('s1', {
       event: 'step_update',
@@ -112,7 +113,13 @@ describe('mapAgyEvent', () => {
         tool_info: { name: 'run_command', output: 'ok' },
       },
     }, state);
-    expect(r.notifications.some((n) => n.params.update.status === 'completed')).toBe(true);
+    expect(
+      r.notifications.some(
+        (n) =>
+          n.params.update.sessionUpdate === 'tool_call_update' &&
+          n.params.update.status === 'completed',
+      ),
+    ).toBe(true);
   });
 
   test('result SUCCESS → idle end_turn + usage', () => {

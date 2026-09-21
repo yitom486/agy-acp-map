@@ -166,7 +166,8 @@ export class AgySessionCore {
         throw new RequestError(-32001, `Session not found: ${sessionId}`);
       }
 
-      const recordedVersion = record.protocolVersion ?? protocolVersion;
+      // Legacy sessions created before v2 was introduced have no protocolVersion; strictly default them to v1
+      const recordedVersion = record.protocolVersion ?? 1;
       if (recordedVersion !== protocolVersion) {
         throw new RequestError(
           -32602,

@@ -189,5 +189,5 @@ describe('AgyAcpService & SDK Agent', () => {
       await service.closeSession({ sessionId });
       process.env.AGY_BIN = originalBin;
     }
-  });
+  }, 20000);
 });

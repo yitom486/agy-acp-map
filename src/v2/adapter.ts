@@ -77,22 +77,30 @@ export class AgyAcpV2Service {
       state: 'running',
     });
 
-    const outcome = await this.core.promptTurn(params, 2, async (update) => {
-      const formatted = formatUpdateForProtocol(update, 2);
-      if (formatted) {
-        await notifyClient(formatted);
+    let stopReason = 'end_turn';
+    try {
+      const outcome = await this.core.promptTurn(params, 2, async (update) => {
+        const formatted = formatUpdateForProtocol(update, 2);
+        if (formatted) {
+          await notifyClient(formatted);
+        }
+      });
+      stopReason = outcome?.stopReason || 'end_turn';
+      return { stopReason };
+    } catch (err) {
+      stopReason = 'error';
+      throw err;
+    } finally {
+      // Guarantee that state_update: idle is sent so client never hangs in 'running' state
+      try {
+        await notifyClient({
+          sessionUpdate: 'state_update',
+          state: 'idle',
+          stopReason,
+        });
+      } catch {
+        /* ignore notification errors during cleanup */
       }
-    });
-
-    const stopReason = outcome?.stopReason || 'end_turn';
-
-    // Notify idle state with stopReason upon turn completion
-    await notifyClient({
-      sessionUpdate: 'state_update',
-      state: 'idle',
-      stopReason,
-    });
-
-    return { stopReason };
+    }
   }
 }

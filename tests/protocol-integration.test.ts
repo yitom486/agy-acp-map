@@ -119,12 +119,15 @@ describe('Simulated Integration Tests (Offline Mock CLI)', () => {
         },
       );
 
-      // Assert tool_call_update with status in_progress is preserved (not stripped)
-      const inProgressUpdate = updates.find(
-        (u) => u.sessionUpdate === 'tool_call_update' && u.status === 'in_progress',
+      // Assert initial tool_call with status in_progress is emitted
+      const initialToolCall = updates.find(
+        (u) => u.sessionUpdate === 'tool_call' && u.status === 'in_progress',
       );
-      expect(inProgressUpdate).toBeDefined();
+      expect(initialToolCall).toBeDefined();
+      expect(initialToolCall.toolCallId).toBe('agy-tool-1');
+      expect(initialToolCall.title).toBe('read_file');
 
+      // Assert subsequent tool_call_update with status completed is emitted
       const completedUpdate = updates.find(
         (u) => u.sessionUpdate === 'tool_call_update' && u.status === 'completed',
       );
@@ -178,26 +181,53 @@ describe('Simulated Integration Tests (Offline Mock CLI)', () => {
         },
       );
 
-      // Outcome stopReason
+      // In ACP v2, promptSession returns stopReason to internal caller, but app returns {} on wire
       expect(outcome.stopReason).toBe('end_turn');
 
-      // First update must be state_update: running
-      expect(updates[0]).toMatchObject({
-        sessionUpdate: 'state_update',
-        state: 'running',
-      });
+      // Verify state sequence: running -> chunks -> idle
+      expect(updates[0].sessionUpdate).toBe('state_update');
+      expect(updates[0].state).toBe('running');
 
-      // V2 supports user_message notification
-      const userMsg = updates.find((u) => u.sessionUpdate === 'user_message');
-      expect(userMsg).toBeDefined();
-
-      // Last update must be state_update: idle with stopReason: 'end_turn'
       const lastUpdate = updates[updates.length - 1];
-      expect(lastUpdate).toMatchObject({
-        sessionUpdate: 'state_update',
-        state: 'idle',
-        stopReason: 'end_turn',
-      });
+      expect(lastUpdate.sessionUpdate).toBe('state_update');
+      expect(lastUpdate.state).toBe('idle');
+      expect(lastUpdate.stopReason).toBe('end_turn');
+
+      // In ACP v2, user_message notification IS emitted in state sequence
+      expect(updates.some((u) => u.sessionUpdate === 'user_message')).toBe(true);
+
+      await v2Service.closeSession({ sessionId });
+    });
+
+    test('V2 promptSession error path guarantees state_update: idle notification', async () => {
+      const core = new AgySessionCore();
+      const v2Service = new AgyAcpV2Service(core);
+
+      const { sessionId } = await v2Service.newSession({ cwd: testCwd });
+      const updates: any[] = [];
+
+      // Pass invalid empty prompt to trigger promptTurn failure
+      await expect(
+        v2Service.promptSession(
+          {
+            sessionId,
+            prompt: [], // empty prompt throws RequestError
+          },
+          (u) => {
+            updates.push(u);
+          },
+        ),
+      ).rejects.toThrow();
+
+      // Verify state_update: running was emitted first
+      expect(updates[0].sessionUpdate).toBe('state_update');
+      expect(updates[0].state).toBe('running');
+
+      // Verify state_update: idle was still emitted in finally block with stopReason error
+      const lastUpdate = updates[updates.length - 1];
+      expect(lastUpdate.sessionUpdate).toBe('state_update');
+      expect(lastUpdate.state).toBe('idle');
+      expect(lastUpdate.stopReason).toBe('error');
 
       await v2Service.closeSession({ sessionId });
     });
@@ -212,15 +242,15 @@ describe('Simulated Integration Tests (Offline Mock CLI)', () => {
       const { sessionId } = await v1Service.newSession({ cwd: testCwd });
 
       // Attempt resume from V2 must be rejected
-      expect(v2Service.resumeSession({ sessionId })).rejects.toThrow(/created with ACP v1/);
+      await expect(v2Service.resumeSession({ sessionId })).rejects.toThrow(/created with ACP v1/);
 
       // Attempt prompt from V2 must be rejected
-      expect(
+      await expect(
         v2Service.promptSession({ sessionId, prompt: [{ type: 'text', text: 'fail' }] }, () => {}),
       ).rejects.toThrow(/protocol mismatch/);
 
       // Attempt setConfigOption from V2 must be rejected
-      expect(
+      await expect(
         v2Service.setConfigOption({ sessionId, configId: 'model', value: 'gemini-3.8-pro' }),
       ).rejects.toThrow(/cannot be modified with v2/);
 
@@ -235,19 +265,48 @@ describe('Simulated Integration Tests (Offline Mock CLI)', () => {
       const { sessionId } = await v2Service.newSession({ cwd: testCwd });
 
       // Attempt resume from V1 must be rejected
-      expect(v1Service.resumeSession({ sessionId })).rejects.toThrow(/created with ACP v2/);
+      await expect(v1Service.resumeSession({ sessionId })).rejects.toThrow(/created with ACP v2/);
 
       // Attempt prompt from V1 must be rejected
-      expect(
+      await expect(
         v1Service.promptSession({ sessionId, prompt: [{ type: 'text', text: 'fail' }] }, () => {}),
       ).rejects.toThrow(/protocol mismatch/);
 
       // Attempt setConfigOption from V1 must be rejected
-      expect(
+      await expect(
         v1Service.setConfigOption({ sessionId, id: 'model', value: 'gemini-3.8-pro' }),
       ).rejects.toThrow(/cannot be modified with v1/);
 
       await v2Service.closeSession({ sessionId });
+    });
+
+    test('Legacy session without protocolVersion in store defaults to v1 and rejects v2 resume', async () => {
+      const core = new AgySessionCore();
+      const v1Service = new AgyAcpV1Service(core);
+      const v2Service = new AgyAcpV2Service(core);
+
+      const legacySessionId = 'legacy-v1-session-001';
+      // Simulate legacy store record written before v2 support was introduced
+      core.sessionStore.upsert({
+        sessionId: legacySessionId,
+        cwd: testCwd,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        // protocolVersion is undefined (legacy record)
+      });
+
+      // V1 resume succeeds
+      const v1Resumed = await v1Service.resumeSession({ sessionId: legacySessionId });
+      expect(v1Resumed.configOptions).toBeDefined();
+      expect(core.sessions.has(legacySessionId)).toBe(true);
+
+      // Close session in memory
+      await v1Service.closeSession({ sessionId: legacySessionId });
+
+      // V2 resume MUST be rejected because legacy session defaulted to v1
+      await expect(v2Service.resumeSession({ sessionId: legacySessionId })).rejects.toThrow(
+        /created with ACP v1 and cannot be resumed with v2/,
+      );
     });
   });
 });

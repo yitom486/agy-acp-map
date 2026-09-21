@@ -125,7 +125,16 @@ export function formatUpdateForProtocol(
   update: Record<string, unknown>,
   protocolVersion: number,
 ): Record<string, unknown> | null {
-  if (protocolVersion >= 2) return update;
+  if (protocolVersion >= 2) {
+    // In ACP v2, tool creation and update are unified under tool_call_update (upsert semantics)
+    if (update.sessionUpdate === 'tool_call') {
+      return {
+        ...update,
+        sessionUpdate: 'tool_call_update',
+      };
+    }
+    return update;
+  }
 
   // Protocol v1 formatting:
   // In v1, state_update does not exist; return null so it is not emitted.
@@ -278,25 +287,29 @@ export function mapAgyEvent(
       const failed = stepState === 'ERROR' || Boolean(error);
       const richOpts = { ...imageOpts(state), toolName };
 
-      if (stepState === 'ACTIVE' || !state.toolSeen.has(stepIndex)) {
+      if (!state.toolSeen.has(stepIndex)) {
         state.toolSeen.add(stepIndex);
-        const update: Record<string, unknown> = {
-          sessionUpdate: 'tool_call_update',
+        const status = isTerminal ? (failed ? 'failed' : 'completed') : 'in_progress';
+        const toolCall: Record<string, unknown> = {
+          sessionUpdate: 'tool_call',
           toolCallId,
           title: toolName,
           kind,
-          status: isTerminal ? (failed ? 'failed' : 'completed') : 'in_progress',
+          status,
         };
-        if (params !== undefined) update.rawInput = params;
+        if (params !== undefined) toolCall.rawInput = params;
+
         if (isTerminal) {
           const textOut = stringifyOut(output, error);
           const rich = buildRichToolContent(textOut, params, output, richOpts);
-          if (rich.content.length) update.content = rich.content;
-          if (output !== undefined) update.rawOutput = output;
-          if (error !== undefined) update.rawError = error;
+          if (rich.content.length) toolCall.content = rich.content;
+          if (output !== undefined) toolCall.rawOutput = output;
+          if (error !== undefined) toolCall.rawError = error;
+          notifications.push(notify(sessionId, toolCall));
           emitImageAgentChunks(sessionId, state, rich.imagePaths, notifications);
+        } else {
+          notifications.push(notify(sessionId, toolCall));
         }
-        notifications.push(notify(sessionId, update));
       } else if (isTerminal) {
         const update: Record<string, unknown> = {
           sessionUpdate: 'tool_call_update',
