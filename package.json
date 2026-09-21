@@ -38,6 +38,7 @@
     "test": "bun test src/lib",
     "test:args": "bun tests/test-agy-args.ts",
     "smoke": "bun tests/smoke/smoke-basic.ts",
+    "smoke:v2": "bun tests/smoke/smoke-v2-draft.ts",
     "smoke:flags": "bun tests/smoke/smoke-flags.ts",
     "smoke:permissions": "bun tests/smoke/smoke-permissions.ts",
     "smoke:image-in": "bun tests/smoke/smoke-image-in.ts",

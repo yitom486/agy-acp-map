@@ -71,7 +71,7 @@ export function createSmokeHarness(opts: SmokeHarnessOptions = {}): SmokeHarness
     child.stdin?.write(JSON.stringify(msg) + '\n');
     log('→', msg);
     return new Promise((resolve, reject) => {
-      pending.set(id, { method, resolve, reject });
+      pending.set(id, { method, sessionId: params?.sessionId, resolve, reject });
     });
   }
 
@@ -83,7 +83,7 @@ export function createSmokeHarness(opts: SmokeHarnessOptions = {}): SmokeHarness
 
   function waitIdle(timeoutMs = 90000, sessionId: string | null = null): Promise<any> {
     return new Promise((resolve, reject) => {
-      if (lastIdle && lastIdle.pending && (!sessionId || lastIdle.sessionId === sessionId)) {
+      if (lastIdle && lastIdle.pending && (!sessionId || !lastIdle.sessionId || lastIdle.sessionId === sessionId)) {
         lastIdle.pending = false;
         resolve(lastIdle);
         return;
@@ -94,7 +94,7 @@ export function createSmokeHarness(opts: SmokeHarnessOptions = {}): SmokeHarness
       }, timeoutMs);
 
       onIdleCallback = (u) => {
-        if (!sessionId || u.sessionId === sessionId) {
+        if (!sessionId || !u.sessionId || u.sessionId === sessionId) {
           clearTimeout(timer);
           onIdleCallback = null;
           resolve(u);
@@ -120,8 +120,23 @@ export function createSmokeHarness(opts: SmokeHarnessOptions = {}): SmokeHarness
       const p = pending.get(msg.id);
       if (p) {
         pending.delete(msg.id);
-        if (msg.error) p.reject(msg.error);
-        else p.resolve(msg.result);
+        if (msg.error) {
+          p.reject(msg.error);
+        } else {
+          if (msg.result && typeof msg.result === 'object' && msg.result.stopReason) {
+            const idlePayload = {
+              sessionId: p.sessionId || null,
+              stopReason: msg.result.stopReason,
+              pending: true,
+            };
+            lastIdle = idlePayload;
+            if (onIdleCallback) {
+              lastIdle.pending = false;
+              onIdleCallback(idlePayload);
+            }
+          }
+          p.resolve(msg.result);
+        }
       }
       return;
     }

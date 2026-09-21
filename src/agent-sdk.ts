@@ -249,7 +249,7 @@ export class AgyAcpService {
   private buildConfigOptions(
     discovery: DiscoveryResult,
     session?: Pick<SdkSession, 'model' | 'agent'>,
-    protocolVersion: ProtocolVersion = 2,
+    protocolVersion: ProtocolVersion = 1,
   ): ProtocolConfigOption[] {
     const models = catalogChoices(discovery.availableModels, session?.model);
     const agents = catalogChoices(discovery.availableAgents, session?.agent);
@@ -293,12 +293,17 @@ export class AgyAcpService {
   }
 
   async initialize() {
+    return this.initializeV1();
+  }
+
+  async initializeV1() {
     const discovery = await this.getDiscovery();
-    const configOptions = this.buildConfigOptions(discovery);
+    const configOptions = this.buildConfigOptions(discovery, undefined, 1);
 
     return {
+      protocolVersion: 1,
       agentInfo: AGENT_INFO,
-      info: AGENT_INFO,
+      agentCapabilities: V1_AGENT_CAPABILITIES,
       availableModels: discovery.availableModels,
       availableAgents: discovery.availableAgents,
       bridgeCapabilities: {
@@ -320,23 +325,32 @@ export class AgyAcpService {
     };
   }
 
-  async initializeV1() {
-    const init = await this.initialize();
-    return {
-      protocolVersion: 1,
-      agentInfo: init.agentInfo,
-      agentCapabilities: V1_AGENT_CAPABILITIES,
-      _meta: init._meta,
-    };
-  }
-
   async initializeV2() {
-    const init = await this.initialize();
+    const discovery = await this.getDiscovery();
+    const configOptions = this.buildConfigOptions(discovery, undefined, 2);
+
     return {
       protocolVersion: 2,
-      info: init.info,
+      info: AGENT_INFO,
       capabilities: V2_AGENT_CAPABILITIES,
-      _meta: init._meta,
+      availableModels: discovery.availableModels,
+      availableAgents: discovery.availableAgents,
+      bridgeCapabilities: {
+        ...BRIDGE_CAPABILITIES,
+        availableModels: discovery.availableModels,
+        availableAgents: discovery.availableAgents,
+        configOptions,
+      },
+      _meta: {
+        bridgeCapabilities: {
+          ...BRIDGE_CAPABILITIES,
+          availableModels: discovery.availableModels,
+          availableAgents: discovery.availableAgents,
+          configOptions,
+        },
+        availableModels: discovery.availableModels,
+        availableAgents: discovery.availableAgents,
+      },
     };
   }
 
@@ -346,7 +360,7 @@ export class AgyAcpService {
       throw new RequestError(-32602, 'cwd must be an absolute path');
     }
 
-    const protocolVersion: ProtocolVersion = params?.protocolVersion === 1 ? 1 : 2;
+    const protocolVersion: ProtocolVersion = params?.protocolVersion === 2 ? 2 : 1;
     const launch = extractLaunchConfig(params);
     const discovery = await this.getDiscovery();
     const sessionId = randomUUID();
@@ -407,7 +421,7 @@ export class AgyAcpService {
       throw new RequestError(-32602, 'sessionId is required for session/resume');
     }
 
-    const requestedProtocolVersion: ProtocolVersion = params?.protocolVersion === 1 ? 1 : 2;
+    const requestedProtocolVersion: ProtocolVersion = params?.protocolVersion === 2 ? 2 : 1;
     let session = this.sessions.get(sessionId);
     if (!session) {
       const record = this.sessionStore.get(sessionId);
@@ -493,7 +507,7 @@ export class AgyAcpService {
     }
 
     const protocolVersion: ProtocolVersion =
-      params?.protocolVersion === 1 || session.protocolVersion === 1 ? 1 : 2;
+      params?.protocolVersion === 2 || session.protocolVersion === 2 ? 2 : 1;
     const discovery = await this.getDiscovery();
     this.applyCatalogDefaults(session, discovery);
     const before = this.buildConfigOptions(discovery, session, protocolVersion);
@@ -603,6 +617,10 @@ export class AgyAcpService {
       return Promise.reject(new RequestError(-32002, 'session is busy; wait for idle or cancel'));
     }
 
+    if (params?.protocolVersion === 1 || params?.protocolVersion === 2) {
+      session.protocolVersion = params.protocolVersion;
+    }
+
     const { text, notes, stagedFiles } = normalizePromptBlocksSync(params?.prompt || [], {
       cwd: session.cwd,
     });
@@ -629,18 +647,19 @@ export class AgyAcpService {
     console.error(`[ACP-SDK] promptSession: sid: ${sessionId}, isWritable: ${session.proc.isWritable()}, model: ${session.model}, text: "${text.slice(0, 60)}"`);
 
     const messageId = `msg_user_${randomUUID().slice(0, 8)}`;
-    queue.enqueue(() =>
-      notifyClient(
-        formatUpdateForProtocol(
-          {
-            sessionUpdate: 'user_message',
-            messageId,
-            content: [{ type: 'text', text }],
-          },
-          session.protocolVersion,
-        ),
-      ),
-    );
+    queue.enqueue(() => {
+      const userUpdate = formatUpdateForProtocol(
+        {
+          sessionUpdate: 'user_message',
+          messageId,
+          content: [{ type: 'text', text }],
+        },
+        session.protocolVersion,
+      );
+      if (userUpdate) {
+        notifyClient(userUpdate);
+      }
+    });
 
     if (session.protocolVersion >= 2) {
       queue.enqueue(() =>
@@ -667,16 +686,17 @@ export class AgyAcpService {
             session.softDenyEmitted = true;
             const msg = formatSoftDenyMessage(session.softDenies);
             if (msg) {
-              await notifyClient(
-                formatUpdateForProtocol(
-                  {
-                    sessionUpdate: 'agent_message_chunk',
-                    messageId: `msg_agent_soft_deny_${Date.now()}`,
-                    content: { type: 'text', text: '\n\n' + msg },
-                  },
-                  session.protocolVersion,
-                ),
+              const softDenyUpdate = formatUpdateForProtocol(
+                {
+                  sessionUpdate: 'agent_message_chunk',
+                  messageId: `msg_agent_soft_deny_${Date.now()}`,
+                  content: { type: 'text', text: '\n\n' + msg },
+                },
+                session.protocolVersion,
               );
+              if (softDenyUpdate) {
+                await notifyClient(softDenyUpdate);
+              }
             }
           }
 
@@ -721,11 +741,13 @@ export class AgyAcpService {
           for (const n of notifications) {
             const u = n.params?.update as any;
             if (u) {
-              const formatted = formatUpdateForProtocol(u, session.protocolVersion);
-              await notifyClient(formatted);
               if (u.sessionUpdate === 'state_update' && u.state === 'idle') {
                 finish(u.stopReason || 'end_turn');
                 return;
+              }
+              const formatted = formatUpdateForProtocol(u, session.protocolVersion);
+              if (formatted) {
+                await notifyClient(formatted);
               }
             }
           }
@@ -735,16 +757,17 @@ export class AgyAcpService {
       const onError = (err: Error) => {
         console.error(`[ACP-SDK] onError (sid: ${sessionId}):`, err.message);
         queue.enqueue(async () => {
-          await notifyClient(
-            formatUpdateForProtocol(
-              {
-                sessionUpdate: 'agent_message_chunk',
-                messageId: `msg_agent_err_${Date.now()}`,
-                content: { type: 'text', text: `\n[agy error] ${err.message}` },
-              },
-              session.protocolVersion,
-            ),
+          const errUpdate = formatUpdateForProtocol(
+            {
+              sessionUpdate: 'agent_message_chunk',
+              messageId: `msg_agent_err_${Date.now()}`,
+              content: { type: 'text', text: `\n[agy error] ${err.message}` },
+            },
+            session.protocolVersion,
           );
+          if (errUpdate) {
+            await notifyClient(errUpdate);
+          }
           finish('end_turn');
         });
       };
@@ -856,11 +879,14 @@ export function createAcpV1App(service: AgyAcpService = new AgyAcpService()): v1
     .onRequest(v1.methods.agent.session.list, (ctx) => service.listSessions(ctx.params))
     .onRequest(v1.methods.agent.session.close, (ctx) => service.closeSession(ctx.params))
     .onRequest(v1.methods.agent.session.prompt, async (ctx: any) => {
-      return (await service.promptSession(ctx.params, (update) => {
-        return (ctx.client as any).notify(v1.methods.client.session.update, {
-          sessionId: ctx.params.sessionId,
-          update: formatUpdateForProtocol(update, 1),
-        });
+      return (await service.promptSession({ ...ctx.params, protocolVersion: 1 }, (update) => {
+        const formatted = formatUpdateForProtocol(update, 1);
+        if (formatted) {
+          return (ctx.client as any).notify(v1.methods.client.session.update, {
+            sessionId: ctx.params.sessionId,
+            update: formatted,
+          });
+        }
       })) as any;
     })
     .onNotification(v1.methods.agent.session.cancel, (ctx) => service.cancelSession(ctx.params));
@@ -885,11 +911,14 @@ export function createAcpV2App(service: AgyAcpService = new AgyAcpService()): v2
     .onRequest(v2.methods.agent.session.list, (ctx) => service.listSessions(ctx.params))
     .onRequest(v2.methods.agent.session.close, (ctx) => service.closeSession(ctx.params))
     .onRequest(v2.methods.agent.session.prompt, async (ctx: any) => {
-      return (await service.promptSession(ctx.params, (update) => {
-        return (ctx.client as any).notify(v2.methods.client.session.update, {
-          sessionId: ctx.params.sessionId,
-          update: formatUpdateForProtocol(update, 2),
-        });
+      return (await service.promptSession({ ...ctx.params, protocolVersion: 2 }, (update) => {
+        const formatted = formatUpdateForProtocol(update, 2);
+        if (formatted) {
+          return (ctx.client as any).notify(v2.methods.client.session.update, {
+            sessionId: ctx.params.sessionId,
+            update: formatted,
+          });
+        }
       })) as any;
     })
     .onNotification(v2.methods.agent.session.cancel, (ctx) => service.cancelSession(ctx.params));

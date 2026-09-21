@@ -44,7 +44,7 @@ describe('AgyAcpService & SDK Agent', () => {
     expect(service.newSession({})).rejects.toThrow();
   });
 
-  test('newSession creates and persists valid session', async () => {
+  test('newSession creates and persists valid session with v1 defaults', async () => {
     const service = new AgyAcpService();
     const cwd = path.resolve(import.meta.dir, '../../');
     const res = await service.newSession({ cwd, model: 'test-model' });
@@ -52,13 +52,13 @@ describe('AgyAcpService & SDK Agent', () => {
     expect(typeof res.sessionId).toBe('string');
     expect(res._meta?.model).toBe('test-model');
 
-    const model = (res.configOptions as any[]).find((option) => option.configId === 'model');
+    const model = (res.configOptions as any[]).find((option) => option.id === 'model');
     expect(model).toMatchObject({
       type: 'select',
-      configId: 'model',
+      id: 'model',
       currentValue: 'test-model',
     });
-    expect(model.id).toBeUndefined();
+    expect(model.configId).toBeUndefined();
     expect(model.options.some((option: any) => option.value === 'test-model')).toBe(true);
 
     const list = await service.listSessions({ cwd });
@@ -75,7 +75,7 @@ describe('AgyAcpService & SDK Agent', () => {
     const resumed = await service.resumeSession({ sessionId: created.sessionId });
     expect(resumed._meta?.model).toBe('gemini-3.8-flash-high');
     expect(resumed.sessionId).toBeUndefined();
-    expect((resumed.configOptions as any[]).find((option) => option.configId === 'model'))
+    expect((resumed.configOptions as any[]).find((option) => option.id === 'model'))
       .toMatchObject({
         type: 'select',
         currentValue: 'gemini-3.8-flash-high',
@@ -84,29 +84,29 @@ describe('AgyAcpService & SDK Agent', () => {
     await service.closeSession({ sessionId: created.sessionId });
   });
 
-  test('v1 uses the legacy standard selector key id', async () => {
+  test('v2 uses configId selector key', async () => {
     const service = new AgyAcpService();
     const cwd = path.resolve(import.meta.dir, '../../');
     const created = await service.newSession({
       cwd,
-      protocolVersion: 1,
+      protocolVersion: 2,
       model: 'gemini-3.8-flash-high',
     });
 
-    const model = (created.configOptions as any[]).find((option) => option.id === 'model');
+    const model = (created.configOptions as any[]).find((option) => option.configId === 'model');
     expect(model).toMatchObject({
       type: 'select',
-      id: 'model',
+      configId: 'model',
       currentValue: 'gemini-3.8-flash-high',
     });
-    expect(model.configId).toBeUndefined();
+    expect(model.id).toBeUndefined();
 
     const resumed = await service.resumeSession({
       sessionId: created.sessionId,
-      protocolVersion: 1,
+      protocolVersion: 2,
     });
-    expect((resumed.configOptions as any[]).some((option) => option.id === 'model')).toBe(true);
-    expect((resumed.configOptions as any[]).some((option) => option.configId === 'model')).toBe(false);
+    expect((resumed.configOptions as any[]).some((option) => option.configId === 'model')).toBe(true);
+    expect((resumed.configOptions as any[]).some((option) => option.id === 'model')).toBe(false);
 
     await service.closeSession({ sessionId: created.sessionId });
   });
@@ -118,14 +118,14 @@ describe('AgyAcpService & SDK Agent', () => {
 
     const updated = await service.setConfigOption({
       sessionId: session.sessionId,
-      configId: 'model',
+      id: 'model',
       value: 'gemini-3.8-flash-low',
     });
     expect(updated.sessionId).toBeUndefined();
-    expect(updated.configId).toBeUndefined();
+    expect(updated.id).toBeUndefined();
     expect(updated.value).toBeUndefined();
     expect(updated._meta?.model).toBe('gemini-3.8-flash-low');
-    expect((updated.configOptions as any[]).find((option) => option.configId === 'model'))
+    expect((updated.configOptions as any[]).find((option) => option.id === 'model'))
       .toMatchObject({
         type: 'select',
         currentValue: 'gemini-3.8-flash-low',

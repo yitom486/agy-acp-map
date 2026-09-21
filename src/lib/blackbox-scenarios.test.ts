@@ -22,7 +22,7 @@ describe('AgyAcpService Black-box Scenarios (Offline Simulation)', () => {
 
   test('Tool Call: maps ACTIVE and DONE tool states into ACP tool updates', async () => {
     const service = new AgyAcpService();
-    const { sessionId } = await service.newSession({ cwd: testCwd });
+    const { sessionId } = await service.newSession({ cwd: testCwd, protocolVersion: 2 });
     const updates: any[] = [];
 
     try {
@@ -57,7 +57,7 @@ describe('AgyAcpService Black-box Scenarios (Offline Simulation)', () => {
 
   test('Reasoning / Thought Stream: segregates thought_delta into agent_thought_chunk', async () => {
     const service = new AgyAcpService();
-    const { sessionId } = await service.newSession({ cwd: testCwd });
+    const { sessionId } = await service.newSession({ cwd: testCwd, protocolVersion: 2 });
     const thoughtChunks: string[] = [];
     const messageChunks: string[] = [];
 
@@ -87,7 +87,7 @@ describe('AgyAcpService Black-box Scenarios (Offline Simulation)', () => {
 
   test('Soft Deny: safely handles permission denials without crashing', async () => {
     const service = new AgyAcpService();
-    const { sessionId } = await service.newSession({ cwd: testCwd });
+    const { sessionId } = await service.newSession({ cwd: testCwd, protocolVersion: 2 });
     const updates: any[] = [];
 
     try {
@@ -176,7 +176,7 @@ describe('AgyAcpService Black-box Scenarios (Offline Simulation)', () => {
 
   test('Dynamic Model Switch: kills existing process and respawns cleanly with new model', async () => {
     const service = new AgyAcpService();
-    const { sessionId } = await service.newSession({ cwd: testCwd, model: 'gemini-3.8-flash-high' });
+    const { sessionId } = await service.newSession({ cwd: testCwd, model: 'gemini-3.8-flash-high', protocolVersion: 2 });
 
     try {
       // Turn 1

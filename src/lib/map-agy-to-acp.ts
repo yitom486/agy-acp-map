@@ -120,14 +120,20 @@ function agentThoughtIdForStep(state: MapperState, stepIndex: number) {
   return state.thoughtMessageIds.get(stepIndex)!;
 }
 
-/** Format or downgrade updates according to client ACP protocol version (v1 vs v2). */
+/** Format or adapt updates according to client ACP protocol version (v1 vs v2). */
 export function formatUpdateForProtocol(
   update: Record<string, unknown>,
   protocolVersion: number,
-): Record<string, unknown> {
+): Record<string, unknown> | null {
   if (protocolVersion >= 2) return update;
 
-  // Protocol v1 downgrade:
+  // Protocol v1 formatting:
+  // In v1, state_update does not exist; return null so it is not emitted as a session update notification.
+  if (update.sessionUpdate === 'state_update') {
+    return null;
+  }
+
+  // Protocol v1 downgrade for tool calls:
   if (update.sessionUpdate === 'tool_call_update') {
     return {
       sessionUpdate: 'tool_call',
@@ -142,6 +148,7 @@ export function formatUpdateForProtocol(
     };
   }
 
+  // Protocol v1 downgrade for thought stream:
   if (update.sessionUpdate === 'agent_thought_chunk') {
     return {
       sessionUpdate: 'agent_message_chunk',
