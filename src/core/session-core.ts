@@ -354,6 +354,7 @@ export class AgySessionCore {
   async resumeSession(
     params: any,
     protocolVersion: ProtocolVersion = 1,
+    opts?: { warmup?: boolean },
   ): Promise<{ session: SdkSession; discovery: DiscoveryResult; meta?: Record<string, unknown> }> {
     const sessionId = params?.sessionId;
     if (!sessionId || typeof sessionId !== 'string') {
@@ -489,7 +490,10 @@ export class AgySessionCore {
     this.applyCatalogDefaults(session, discovery);
     this.persistSession(session);
     // Re-attached sessions also get a warm process if none is alive.
-    this.warmupSession(sessionId);
+    // History-only loads (v1 session/load) skip this: no prompt follows yet.
+    if (opts?.warmup !== false) {
+      this.warmupSession(sessionId);
+    }
 
     return {
       session,

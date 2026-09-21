@@ -1,3 +1,16 @@
+## v0.1.4 — connect-time warmup, real quota windows, Windows headless build matrix (2026-09-22)
+
+### Added
+- **Connect-time warm-up**: `session/new` / `session/resume` pre-spawn agy in the background (`AGY_ACP_WARMUP=0` to disable); first prompt reuses the live process. `v1 session/load` stays read-only (no pre-spawn).
+- **Real quota windows**: `usage_update.size` now uses verified per-family windows (gemini-3.x 1,048,576; claude-4.6 1M; gpt-oss-120b 131,072; `AGY_ACP_CONTEXT_SIZE` override; CLI-reported hint wins when present). `used` is cumulative input tokens with progressive per-step updates.
+- **Windows headless matrix**: `csc.exe` fallback build when Go is missing; PE GUI-subsystem verification; non-Windows cross-compile (`GOOS=windows`) so published npm packages always ship `dist/agy-headless.exe`; CI installs Go.
+- **Flash watchdog test**: Zed-like GUI-parent harness proving zero visible console windows through the shim.
+
+### Fixed
+- Tool mapping for real wire shapes (`view_file.AbsolutePath`, error objects); stable per-turn `toolCallId`s; per-notification failure isolation in the turn queue.
+
+---
+
 ## v0.1.3 — ACP v1/v2 typing, thought stream, FIFO queue & resume handler (2026-09-20)
 
 ### Fixed & Added

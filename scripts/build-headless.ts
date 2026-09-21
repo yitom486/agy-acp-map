@@ -2,8 +2,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
-if (process.platform !== 'win32') {
-  console.log('[agy-headless] skipped: the launcher is Windows-only');
+const CROSS_WINDOWS = process.env.GOOS === 'windows' || process.env.AGY_HEADLESS_CROSS === '1';
+
+if (process.platform !== 'win32' && !CROSS_WINDOWS) {
+  console.log('[agy-headless] skipped: the launcher is Windows-only (set AGY_HEADLESS_CROSS=1 with Go to cross-compile)');
   process.exit(0);
 }
 
@@ -24,20 +26,27 @@ if (fs.existsSync(goSource) && tryGoBuild()) {
 }
 
 // Fallback: inbox C# compiler, zero dependency on vanilla Windows.
-if (fs.existsSync(csSource) && tryCscBuild()) {
+if (process.platform === 'win32' && fs.existsSync(csSource) && tryCscBuild()) {
   verifyGuiSubsystem(output);
   console.log(`[agy-headless] built ${output} (csc)`);
   process.exit(0);
 }
 
-throw new Error(
-  `[agy-headless] could not build ${output}. ` +
-    failures.join(' ') +
-    ' Install Go, or ensure csc.exe exists at C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe.',
-);
+if (process.platform === 'win32' || process.env.AGY_HEADLESS_CROSS === '1' || process.env.GOOS === 'windows') {
+  throw new Error(
+    `[agy-headless] could not build ${output}. ` +
+      failures.join(' ') +
+      ' Install Go, or (Windows) ensure csc.exe exists at C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe.',
+  );
+}
+console.log('[agy-headless] skipped: no Go toolchain for cross-compile (publish CI installs Go)');
+process.exit(0);
 
 function tryGoBuild(): boolean {
   const go = process.env.GO_BIN || 'go';
+  // On non-Windows CI (npm publish runs there), cross-compile so the
+  // published package always ships dist/agy-headless.exe.
+  const cross = process.platform !== 'win32';
   const result = spawnSync(
     go,
     ['build', '-trimpath', '-ldflags=-H=windowsgui', '-o', output, '.'],
@@ -45,6 +54,7 @@ function tryGoBuild(): boolean {
       cwd: projectDir,
       stdio: 'inherit',
       windowsHide: true,
+      env: cross ? { ...process.env, GOOS: 'windows', GOARCH: 'amd64', CGO_ENABLED: '0' } : process.env,
     },
   );
   if (result.error) {

@@ -51,7 +51,8 @@ export class AgyAcpV1Service {
     params: any,
     notifyClient: (update: any) => Promise<void> | void,
   ): Promise<any> {
-    const { session, discovery, meta } = await this.core.resumeSession(params, 1);
+    // Read-only history replay: do not pre-spawn agy for it.
+    const { session, discovery, meta } = await this.core.resumeSession(params, 1, { warmup: false });
     await this.core.replayHistory(session.sessionId, 1, notifyClient);
     return {
       configOptions: buildV1ConfigOptions(discovery, session),
