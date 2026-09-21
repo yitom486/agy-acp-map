@@ -159,12 +159,31 @@ function commandPreview(params: unknown, maxLen = 80): string | undefined {
 function filePreview(params: unknown): string | undefined {
   if (!params || typeof params !== 'object') return undefined;
   const p = params as Record<string, unknown>;
+  // Real agy shapes observed on the wire: view_file uses `AbsolutePath`,
+  // run_command uses `CommandLine`; other tools use path/file/uri variants.
   const raw =
+    (p.AbsolutePath as unknown) ?? (p.absolute_path as unknown) ??
     (p.path as unknown) ?? (p.file as unknown) ?? (p.filePath as unknown) ??
-    (p.filename as unknown) ?? (p.uri as unknown);
+    (p.file_path as unknown) ?? (p.filename as unknown) ?? (p.fileName as unknown) ??
+    (p.directory as unknown) ?? (p.dir as unknown) ??
+    (p.uri as unknown) ?? (p.url as unknown) ?? firstPathLikeValue(p);
   if (typeof raw !== 'string' || !raw.trim()) return undefined;
   const t = raw.trim();
   return t.length > 80 ? '…' + t.slice(-79) : t;
+}
+
+/** Last-resort scan for path-like param values (agy adds new keys often). */
+function firstPathLikeValue(p: Record<string, unknown>): string | undefined {
+  for (const [k, v] of Object.entries(p)) {
+    if (typeof v !== 'string' || !v.trim()) continue;
+    const kl = k.toLowerCase();
+    if (!(kl.includes('path') || kl.includes('file') || kl.includes('dir') || kl.includes('uri'))) continue;
+    const t = v.trim();
+    if (/^[A-Za-z]:[\\/]|^\/|^\\\\/.test(t) || (!t.includes(' ') && /\.[A-Za-z0-9]{1,8}$/.test(t))) {
+      return t;
+    }
+  }
+  return undefined;
 }
 
 /** Human-readable title so Zed never renders a lonely `run_command` card. */
@@ -473,13 +492,23 @@ export function mapAgyEvent(
     const r = (ev.result || {}) as Record<string, unknown>;
     if (r.conversation_id) state.conversationId = r.conversation_id as string;
 
-    const usage = r.usage as { total_tokens?: number } | undefined;
+    const usage = r.usage as
+      | { total_tokens?: number; thinking_tokens?: number; input_tokens?: number; output_tokens?: number }
+      | undefined;
     if (usage && typeof usage.total_tokens === 'number') {
+      // agy never streams thought text (thinking only surfaces as token
+      // counts), so expose the breakdown for clients/debugging instead of
+      // fabricating reasoning content.
+      const meta: Record<string, unknown> = {};
+      if (typeof usage.thinking_tokens === 'number') meta.thinkingTokens = usage.thinking_tokens;
+      if (typeof usage.input_tokens === 'number') meta.inputTokens = usage.input_tokens;
+      if (typeof usage.output_tokens === 'number') meta.outputTokens = usage.output_tokens;
       notifications.push(
         notify(sessionId, {
           sessionUpdate: 'usage_update',
           used: usage.total_tokens,
           size: Math.max(200_000, usage.total_tokens),
+          ...(Object.keys(meta).length ? { _meta: meta } : {}),
         }),
       );
     }

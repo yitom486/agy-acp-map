@@ -163,6 +163,45 @@ describe('mapAgyEvent', () => {
     expect(id2).toBe('agy-t1-s1');
   });
 
+  test('real wire shape: view_file AbsolutePath maps to title+locations+preview', () => {
+    let state = createMapperState();
+    const r = mapAgyEvent('s1', {
+      event: 'step_update',
+      step_update: {
+        step_index: 6,
+        step_type: 'tool',
+        state: 'ACTIVE',
+        tool_name: 'view_file',
+        tool_info: {
+          name: 'view_file',
+          parameters: { AbsolutePath: 'D:/project/js/app/package.json' },
+        },
+      },
+    }, state);
+    const call = r.notifications[0]!.params.update;
+    expect(call.sessionUpdate).toBe('tool_call');
+    expect(call.name).toBe('view_file');
+    expect(call.title).toContain('package.json');
+    expect(call.locations).toEqual([{ path: 'D:/project/js/app/package.json' }]);
+    expect(JSON.stringify(call.content)).toContain('package.json');
+  });
+
+  test('real wire shape: usage exposes thinking breakdown in _meta', () => {
+    const state = createMapperState();
+    const { notifications } = mapAgyEvent('s1', {
+      event: 'result',
+      result: {
+        status: 'SUCCESS',
+        conversation_id: 'c1',
+        response: 'done',
+        usage: { total_tokens: 100, thinking_tokens: 20, input_tokens: 70, output_tokens: 10 },
+      },
+    }, state);
+    const usage = notifications.find((n) => n.params.update.sessionUpdate === 'usage_update');
+    expect(usage!.params.update.used).toBe(100);
+    expect(usage!.params.update._meta).toMatchObject({ thinkingTokens: 20, inputTokens: 70, outputTokens: 10 });
+  });
+
   test('result SUCCESS → idle end_turn + usage', () => {
     let state = createMapperState();
     const { notifications, state: next } = mapAgyEvent('s1', {
