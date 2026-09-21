@@ -8,6 +8,7 @@ import { randomUUID } from 'node:crypto';
 
 export interface NormalizeOpts {
   cwd: string;
+  sessionId?: string;
   stagingDir?: string;
   /** Max decoded bytes for a single blob (default 8MB). */
   maxBlobBytes?: number;
@@ -62,7 +63,11 @@ export function normalizePromptBlocksSync(
       sizeRejected: false,
     };
   }
-  const stagingDir = opts.stagingDir || path.join(cwd, STAGING_DIRNAME);
+  const stagingDir =
+    opts.stagingDir ||
+    (opts.sessionId
+      ? path.join(cwd, STAGING_DIRNAME, opts.sessionId)
+      : path.join(cwd, STAGING_DIRNAME));
   const maxBlob = opts.maxBlobBytes ?? DEFAULT_MAX_BLOB_BYTES;
   const maxTotal = opts.maxTotalBytes ?? DEFAULT_MAX_TOTAL_BYTES;
 
@@ -341,8 +346,9 @@ export function cleanupStaging(
 ): { removed: string[]; skipped: boolean } {
   const keep =
     opts?.keep === true ||
-    process.env.AGY_ACP_KEEP_STAGING === '1' ||
-    process.env.AGY_ACP_KEEP_STAGING === 'true';
+    (opts?.keep !== false &&
+      (process.env.AGY_ACP_KEEP_STAGING === '1' ||
+        process.env.AGY_ACP_KEEP_STAGING === 'true'));
   if (keep) {
     return { removed: [], skipped: true };
   }
@@ -375,14 +381,31 @@ export function cleanupStaging(
 }
 
 /**
- * Clean `<cwd>/.agy-acp-staging` for a session (all files in that dir).
+ * Clean `<cwd>/.agy-acp-staging` for a session.
+ * When `sessionId` is provided, cleans exclusively `<cwd>/.agy-acp-staging/<sessionId>`
+ * without removing staging files belonging to other sessions under the same cwd.
  */
 export function cleanupSessionStaging(
   cwd: string,
-  opts?: { keep?: boolean; stagingDir?: string },
+  opts?: { keep?: boolean; stagingDir?: string; sessionId?: string; files?: string[] },
 ): { removed: string[]; skipped: boolean } {
-  const dir = opts?.stagingDir || path.join(cwd, STAGING_DIRNAME);
-  return cleanupStaging(dir, opts);
+  if (opts?.files && opts.files.length > 0) {
+    return cleanupStaging(opts.files, opts);
+  }
+  const dir =
+    opts?.stagingDir ||
+    (opts?.sessionId
+      ? path.join(cwd, STAGING_DIRNAME, opts.sessionId)
+      : path.join(cwd, STAGING_DIRNAME));
+  const res = cleanupStaging(dir, opts);
+  if (opts?.sessionId && fs.existsSync(dir)) {
+    try {
+      fs.rmdirSync(dir);
+    } catch {
+      /* ignore if not empty */
+    }
+  }
+  return res;
 }
 
 export {

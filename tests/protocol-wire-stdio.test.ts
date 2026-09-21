@@ -1,4 +1,5 @@
-import { describe, test, expect, afterEach } from 'bun:test';
+import { describe, test, expect, afterEach, beforeAll, afterAll } from 'bun:test';
+import fs from 'node:fs';
 import path from 'node:path';
 import { createSmokeHarness, type SmokeHarness } from './smoke/helpers.ts';
 
@@ -7,6 +8,26 @@ const repoRoot = path.resolve(import.meta.dir, '..');
 
 describe('Wire-level Stdio JSON-RPC Integration (Full sdk-server Process)', () => {
   let activeHarness: SmokeHarness | null = null;
+  let originalStore: string | undefined;
+  const testStoreWire = path.resolve(repoRoot, `scratch/test-store-wire-${process.pid}-${Date.now()}.json`);
+
+  beforeAll(() => {
+    originalStore = process.env.AGY_ACP_SESSION_STORE;
+    process.env.AGY_ACP_SESSION_STORE = testStoreWire;
+  });
+
+  afterAll(() => {
+    if (originalStore !== undefined) {
+      process.env.AGY_ACP_SESSION_STORE = originalStore;
+    } else {
+      delete process.env.AGY_ACP_SESSION_STORE;
+    }
+    try {
+      if (fs.existsSync(testStoreWire)) fs.unlinkSync(testStoreWire);
+    } catch {
+      /* ignore */
+    }
+  });
 
   afterEach(() => {
     if (activeHarness) {
@@ -113,6 +134,7 @@ describe('Wire-level Stdio JSON-RPC Integration (Full sdk-server Process)', () =
           AGY_BIN: mockCliPath,
           NODE_ENV: 'test',
         },
+        onServerLog: (line) => console.error('SERVER LOG:', line),
       });
       activeHarness = harness;
 
@@ -236,6 +258,38 @@ describe('Wire-level Stdio JSON-RPC Integration (Full sdk-server Process)', () =
       const listRes = await harness.send('session/list', { cwd: repoRoot });
       expect(Array.isArray(listRes.sessions)).toBe(true);
       expect('nextCursor' in listRes).toBe(true);
+    },
+    20000,
+  );
+
+  test(
+    'Wire-level V2 Invalid Prompt: empty prompt returns JSON-RPC error -32602 over stdio',
+    async () => {
+      const harness = createSmokeHarness({
+        tag: 'v2-invalid-prompt',
+        env: { AGY_BIN: mockCliPath, NODE_ENV: 'test', AGY_ACP_SESSION_STORE: testStoreWire },
+      });
+      activeHarness = harness;
+
+      await harness.send('initialize', {
+        protocolVersion: 2,
+        capabilities: {},
+        info: { name: 'v2-err-client', version: '0.2.0' },
+      });
+
+      const { sessionId } = await harness.send('session/new', { cwd: repoRoot });
+
+      let caught: any = null;
+      try {
+        await harness.send('session/prompt', { sessionId, prompt: [] });
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeDefined();
+      expect(caught.code).toBe(-32602);
+      expect(caught.message).toMatch(/prompt must be a non-empty array/);
+
+      await harness.send('session/delete', { sessionId });
     },
     20000,
   );

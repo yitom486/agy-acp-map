@@ -1,9 +1,11 @@
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AgyAcpService, AGENT_INFO } from '../src/agent-sdk.ts';
 import { AgyAcpV1Service } from '../src/v1/adapter.ts';
 import { AgyAcpV2Service } from '../src/v2/adapter.ts';
+import { createAcpV2App } from '../src/v2/app.ts';
 import { AgySessionCore } from '../src/core/session-core.ts';
 import { setCachedDiscoveryForTest, clearDiscoveryCache } from '../src/lib/agy-discovery.ts';
 
@@ -12,12 +14,16 @@ const __dirname = path.dirname(__filename);
 
 describe('Simulated Integration Tests (Offline Mock CLI)', () => {
   let originalBin: string | undefined;
+  let originalStore: string | undefined;
   const mockCliPath = path.resolve(__dirname, 'fixtures/mock-agy-cli.cjs');
   const testCwd = path.resolve(__dirname, '..');
+  const tmpStore = path.resolve(__dirname, `../scratch/test-store-integration-${process.pid}-${Date.now()}.json`);
 
   beforeAll(() => {
     originalBin = process.env.AGY_BIN;
+    originalStore = process.env.AGY_ACP_SESSION_STORE;
     process.env.AGY_BIN = mockCliPath;
+    process.env.AGY_ACP_SESSION_STORE = tmpStore;
     setCachedDiscoveryForTest({
       availableModels: ['gemini-3.8-flash-high', 'gemini-3.8-pro'],
       availableAgents: ['coder', 'architect'],
@@ -26,7 +32,17 @@ describe('Simulated Integration Tests (Offline Mock CLI)', () => {
 
   afterAll(() => {
     process.env.AGY_BIN = originalBin;
+    if (originalStore !== undefined) {
+      process.env.AGY_ACP_SESSION_STORE = originalStore;
+    } else {
+      delete process.env.AGY_ACP_SESSION_STORE;
+    }
     clearDiscoveryCache();
+    try {
+      if (fs.existsSync(tmpStore)) fs.unlinkSync(tmpStore);
+    } catch {
+      /* ignore */
+    }
   });
 
   describe('ACP V1 Wire-level Conformance', () => {
@@ -367,6 +383,142 @@ describe('Simulated Integration Tests (Offline Mock CLI)', () => {
       await v1Service.deleteSession({ sessionId: s1.sessionId });
       await v1Service.deleteSession({ sessionId: s2.sessionId });
       await v1Service.deleteSession({ sessionId: s3.sessionId });
+    });
+
+    test('session/list deep pagination across multiple pages with >50 sessions and opaque cursor', async () => {
+      const core = new AgySessionCore();
+      const v1Service = new AgyAcpV1Service(core);
+
+      const createdIds: string[] = [];
+      try {
+        for (let i = 0; i < 55; i++) {
+          const s = await v1Service.newSession({ cwd: testCwd });
+          createdIds.push(s.sessionId);
+        }
+
+        const page1 = await v1Service.listSessions({ cwd: testCwd });
+        expect(page1.sessions.length).toBe(50);
+        expect(typeof page1.nextCursor).toBe('string');
+
+        const page2 = await v1Service.listSessions({ cwd: testCwd, cursor: page1.nextCursor });
+        expect(page2.sessions.length).toBeGreaterThanOrEqual(5);
+
+        // Invalid cursor token rejection
+        await expect(v1Service.listSessions({ cwd: testCwd, cursor: 'invalid!cursor!token' })).rejects.toThrow(
+          /Invalid cursor token/,
+        );
+      } finally {
+        for (const id of createdIds) {
+          await v1Service.deleteSession({ sessionId: id });
+        }
+      }
+    });
+
+    test('staging directories are isolated per session and deleting session A preserves session B staging', async () => {
+      const core = new AgySessionCore();
+      const v1Service = new AgyAcpV1Service(core);
+
+      const originalKeep = process.env.AGY_ACP_KEEP_STAGING;
+      process.env.AGY_ACP_KEEP_STAGING = '1';
+      try {
+        const s1 = await v1Service.newSession({ cwd: testCwd });
+        const s2 = await v1Service.newSession({ cwd: testCwd });
+
+        const imgBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+
+        // Send prompt turn with image on s1 and s2
+        await v1Service.promptSession({
+          sessionId: s1.sessionId,
+          prompt: [{ type: 'image', data: imgBase64, mimeType: 'image/png' }],
+        }, () => {});
+
+        await v1Service.promptSession({
+          sessionId: s2.sessionId,
+          prompt: [{ type: 'image', data: imgBase64, mimeType: 'image/png' }],
+        }, () => {});
+
+        const session1 = core.sessions.get(s1.sessionId)!;
+        const session2 = core.sessions.get(s2.sessionId)!;
+
+        expect(session1.stagedFiles.length).toBeGreaterThan(0);
+        expect(session2.stagedFiles.length).toBeGreaterThan(0);
+        const file1 = session1.stagedFiles[0];
+        const file2 = session2.stagedFiles[0];
+
+        expect(fs.existsSync(file1)).toBe(true);
+        expect(fs.existsSync(file2)).toBe(true);
+        expect(path.dirname(file1)).not.toBe(path.dirname(file2));
+
+        // Delete session 1: its staged file should be removed, but session 2's staged file MUST remain!
+        await v1Service.deleteSession({ sessionId: s1.sessionId });
+        expect(fs.existsSync(file1)).toBe(false);
+        expect(fs.existsSync(file2)).toBe(true);
+
+        // Clean up session 2
+        await v1Service.deleteSession({ sessionId: s2.sessionId });
+        expect(fs.existsSync(file2)).toBe(false);
+      } finally {
+        if (originalKeep !== undefined) {
+          process.env.AGY_ACP_KEEP_STAGING = originalKeep;
+        } else {
+          delete process.env.AGY_ACP_KEEP_STAGING;
+        }
+      }
+    });
+
+    test('V2 prompt rejects empty prompt blocks synchronously with -32602 before ACK', async () => {
+      const core = new AgySessionCore();
+      const v2Service = new AgyAcpV2Service(core);
+      const v2App = createAcpV2App(v2Service);
+      const v2Module = await import('@agentclientprotocol/sdk/experimental/v2');
+      const client = v2Module.client();
+
+      await client.connectWith(v2App, async (ctx) => {
+        await ctx.request('initialize' as any, {
+          protocolVersion: 2,
+          capabilities: {},
+          info: { name: 'v2-test-client', version: '0.1.0' },
+        } as any);
+        const { sessionId } = await ctx.request('session/new' as any, { cwd: testCwd } as any);
+
+        // Prompt with empty array
+        await expect(
+          ctx.request('session/prompt' as any, { sessionId, prompt: [] } as any)
+        ).rejects.toThrow(/prompt must be a non-empty array/);
+
+        // Prompt with whitespace only
+        await expect(
+          ctx.request('session/prompt' as any, { sessionId, prompt: [{ type: 'text', text: '   ' }] } as any)
+        ).rejects.toThrow(/prompt contains no text or content/);
+
+        await ctx.request('session/delete' as any, { sessionId } as any);
+      });
+    });
+
+    test('session/resume validates cwd and additionalDirectories strictly', async () => {
+      const core = new AgySessionCore();
+      const v1Service = new AgyAcpV1Service(core);
+
+      const { sessionId } = await v1Service.newSession({ cwd: testCwd });
+
+      // Relative cwd rejected
+      await expect(v1Service.resumeSession({ sessionId, cwd: 'relative/path' })).rejects.toThrow(
+        /cwd must be an absolute path/,
+      );
+
+      // Non-existent cwd rejected
+      const nonExistentPath = path.join(testCwd, 'non-existent-folder-' + Date.now());
+      await expect(v1Service.resumeSession({ sessionId, cwd: nonExistentPath })).rejects.toThrow(
+        /cwd does not exist or is not a directory/,
+      );
+
+      // Non-array additionalDirectories rejected
+      await expect(v1Service.resumeSession({ sessionId, additionalDirectories: 'not-an-array' })).rejects.toThrow(
+        /additionalDirectories must be an array/,
+      );
+
+      // Clean up
+      await v1Service.deleteSession({ sessionId });
     });
   });
 });

@@ -43,10 +43,24 @@ import {
   AsyncSerialQueue,
 } from './types.ts';
 
+export interface SessionCoreOptions {
+  sessionStore?: SessionStore | string;
+}
+
 export class AgySessionCore {
   readonly sessions = new Map<string, SdkSession>();
-  readonly sessionStore = new SessionStore();
+  readonly sessionStore: SessionStore;
   private catalogPromise: Promise<DiscoveryResult> | null = null;
+
+  constructor(options?: SessionCoreOptions) {
+    if (options?.sessionStore instanceof SessionStore) {
+      this.sessionStore = options.sessionStore;
+    } else if (typeof options?.sessionStore === 'string') {
+      this.sessionStore = new SessionStore(options.sessionStore);
+    } else {
+      this.sessionStore = new SessionStore();
+    }
+  }
 
   async getDiscovery(): Promise<DiscoveryResult> {
     if (!this.catalogPromise) {
@@ -58,8 +72,8 @@ export class AgySessionCore {
   persistSession(session: SdkSession): void {
     try {
       this.sessionStore.upsert(sessionToRecord(session));
-    } catch {
-      /* ignore */
+    } catch (err) {
+      console.warn(`[ACP-STORE] Warning: failed to persist session ${session?.sessionId}:`, err);
     }
   }
 
@@ -95,6 +109,23 @@ export class AgySessionCore {
     const cwd = params?.cwd;
     if (!cwd || typeof cwd !== 'string' || !path.isAbsolute(cwd)) {
       throw new RequestError(-32602, 'cwd must be an absolute path');
+    }
+    if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
+      throw new RequestError(-32602, `cwd does not exist or is not a directory: ${cwd}`);
+    }
+
+    if (params?.additionalDirectories !== undefined) {
+      if (!Array.isArray(params.additionalDirectories)) {
+        throw new RequestError(-32602, 'additionalDirectories must be an array');
+      }
+      for (const d of params.additionalDirectories) {
+        if (typeof d !== 'string' || !path.isAbsolute(d)) {
+          throw new RequestError(-32602, `additionalDirectory must be an absolute path: ${d}`);
+        }
+      }
+    }
+    if (params?.mcpServers !== undefined && !Array.isArray(params.mcpServers)) {
+      throw new RequestError(-32602, 'mcpServers must be an array');
     }
 
     const launch = extractLaunchConfig(params);
@@ -157,6 +188,29 @@ export class AgySessionCore {
     const sessionId = params?.sessionId;
     if (!sessionId || typeof sessionId !== 'string') {
       throw new RequestError(-32602, 'sessionId is required for session/resume');
+    }
+
+    if (params?.cwd !== undefined) {
+      if (typeof params.cwd !== 'string' || !path.isAbsolute(params.cwd)) {
+        throw new RequestError(-32602, 'cwd must be an absolute path');
+      }
+      if (!fs.existsSync(params.cwd) || !fs.statSync(params.cwd).isDirectory()) {
+        throw new RequestError(-32602, `cwd does not exist or is not a directory: ${params.cwd}`);
+      }
+    }
+
+    if (params?.additionalDirectories !== undefined) {
+      if (!Array.isArray(params.additionalDirectories)) {
+        throw new RequestError(-32602, 'additionalDirectories must be an array');
+      }
+      for (const d of params.additionalDirectories) {
+        if (typeof d !== 'string' || !path.isAbsolute(d)) {
+          throw new RequestError(-32602, `additionalDirectory must be an absolute path: ${d}`);
+        }
+      }
+    }
+    if (params?.mcpServers !== undefined && !Array.isArray(params.mcpServers)) {
+      throw new RequestError(-32602, 'mcpServers must be an array');
     }
 
     let session = this.sessions.get(sessionId);
@@ -223,6 +277,13 @@ export class AgySessionCore {
         );
       }
       session.updatedAt = new Date().toISOString();
+    }
+
+    if (params?.cwd) {
+      session.cwd = params.cwd;
+    }
+    if (params?.additionalDirectories) {
+      session.additionalDirectories = params.additionalDirectories;
     }
 
     const discovery = await this.getDiscovery();
@@ -337,21 +398,47 @@ export class AgySessionCore {
       });
     }
 
-    // Stable descending sort by updatedAt
+    // Deterministic descending sort by updatedAt, then sessionId ascending
     allSessions.sort((a, b) => {
       const timeA = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
       const timeB = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
-      return timeB - timeA;
+      if (timeB !== timeA) return timeB - timeA;
+      return a.sessionId.localeCompare(b.sessionId);
     });
 
-    // Pagination support per ACP v1/v2 schema
+    // Pagination support per ACP v1/v2 schema with opaque cursor
     const cursor = params?.cursor;
-    const offset = cursor ? parseInt(cursor, 10) : 0;
-    const validOffset = Number.isFinite(offset) && offset >= 0 ? offset : 0;
+    let offset = 0;
+    if (cursor !== undefined && cursor !== null && cursor !== '') {
+      if (typeof cursor !== 'string') {
+        throw new RequestError(-32602, 'cursor must be a string');
+      }
+      try {
+        const decoded = Buffer.from(cursor, 'base64url').toString('utf8');
+        const parsed = JSON.parse(decoded);
+        if (
+          typeof parsed?.offset !== 'number' ||
+          !Number.isInteger(parsed.offset) ||
+          parsed.offset < 0
+        ) {
+          throw new Error('invalid offset payload');
+        }
+        offset = parsed.offset;
+      } catch {
+        if (/^\d+$/.test(cursor)) {
+          offset = parseInt(cursor, 10);
+        } else {
+          throw new RequestError(-32602, `Invalid cursor token: ${cursor}`);
+        }
+      }
+    }
+
     const limit = 50;
-    const paged = allSessions.slice(validOffset, validOffset + limit);
-    const hasMore = validOffset + limit < allSessions.length;
-    const nextCursor = hasMore ? String(validOffset + limit) : null;
+    const paged = allSessions.slice(offset, offset + limit);
+    const hasMore = offset + limit < allSessions.length;
+    const nextCursor = hasMore
+      ? Buffer.from(JSON.stringify({ offset: offset + limit })).toString('base64url')
+      : null;
 
     return { sessions: paged, nextCursor };
   }
@@ -369,9 +456,14 @@ export class AgySessionCore {
       } catch {
         /* ignore */
       }
-      cleanupSessionStaging(session.cwd);
+      cleanupSessionStaging(session.cwd, { sessionId, keep: false });
       session.stagedFiles = [];
       this.sessions.delete(sessionId);
+    } else {
+      const record = this.sessionStore.get(sessionId);
+      if (record?.cwd) {
+        cleanupSessionStaging(record.cwd, { sessionId, keep: false });
+      }
     }
 
     this.sessionStore.delete(sessionId);
@@ -386,7 +478,7 @@ export class AgySessionCore {
     }
 
     await session.proc.kill();
-    cleanupSessionStaging(session.cwd);
+    cleanupSessionStaging(session.cwd, { sessionId, keep: false });
     session.stagedFiles = [];
     this.sessions.delete(sessionId);
 
@@ -406,10 +498,14 @@ export class AgySessionCore {
 
   promptTurn(
     params: any,
-    protocolVersion: ProtocolVersion,
-    notifyClient: (update: any) => Promise<void> | void,
+    protocolVersion: ProtocolVersion = 1,
+    notifyClient: (update: any) => Promise<void>,
+    opts?: { isPreLocked?: boolean },
   ): Promise<{ stopReason: string }> {
     const sessionId = params?.sessionId;
+    if (!sessionId) {
+      return Promise.reject(new RequestError(-32602, 'sessionId is required'));
+    }
     const session = this.sessions.get(sessionId);
     if (!session) {
       return Promise.reject(new RequestError(-32001, `unknown sessionId: ${sessionId}`));
@@ -422,12 +518,13 @@ export class AgySessionCore {
         ),
       );
     }
-    if (session.busy) {
+    if (session.busy && !opts?.isPreLocked) {
       return Promise.reject(new RequestError(-32002, 'session is busy; wait for idle or cancel'));
     }
 
     const { text, notes, stagedFiles } = normalizePromptBlocksSync(params?.prompt || [], {
       cwd: session.cwd,
+      sessionId: session.sessionId,
     });
     if (!text.trim()) {
       return Promise.reject(

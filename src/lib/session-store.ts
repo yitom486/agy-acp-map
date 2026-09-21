@@ -50,6 +50,17 @@ export function deleteOnCloseEnabled(env: NodeJS.ProcessEnv = process.env): bool
   return env.AGY_ACP_DELETE_ON_CLOSE === '1' || env.AGY_ACP_DELETE_ON_CLOSE === 'true';
 }
 
+function sleepSync(ms: number): void {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+      /* spin */
+    }
+  }
+}
+
 /** Build a store record from a live Session-like object. */
 export function sessionToRecord(session: {
   sessionId: string;
@@ -151,52 +162,90 @@ export class SessionStore {
     this.filePath = filePath || resolveSessionStorePath();
   }
 
-  /** Read all records; missing/corrupt file → []. */
+  /** Read all records; missing/corrupt file → []; retries on transient locks. */
   load(): SessionRecord[] {
-    try {
-      if (!fs.existsSync(this.filePath)) return [];
-      const raw = fs.readFileSync(this.filePath, 'utf8');
-      if (!raw.trim()) return [];
-      const parsed = JSON.parse(raw) as SessionStoreFile | SessionRecord[];
-      if (Array.isArray(parsed)) {
-        return parsed.filter(isSessionRecord);
+    const maxAttempts = 5;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        if (!fs.existsSync(this.filePath)) return [];
+        const raw = fs.readFileSync(this.filePath, 'utf8');
+        if (!raw.trim()) {
+          if (attempt < maxAttempts) {
+            sleepSync(5 * attempt);
+            continue;
+          }
+          return [];
+        }
+        const parsed = JSON.parse(raw) as SessionStoreFile | SessionRecord[];
+        if (Array.isArray(parsed)) {
+          return parsed.filter(isSessionRecord);
+        }
+        if (parsed && Array.isArray(parsed.sessions)) {
+          return parsed.sessions.filter(isSessionRecord);
+        }
+        return [];
+      } catch (err: any) {
+        const code = err?.code;
+        if ((code === 'EPERM' || code === 'EBUSY' || code === 'EACCES') && attempt < maxAttempts) {
+          sleepSync(10 * attempt);
+          continue;
+        }
+        return [];
       }
-      if (parsed && Array.isArray(parsed.sessions)) {
-        return parsed.sessions.filter(isSessionRecord);
-      }
-      return [];
-    } catch {
-      return [];
     }
+    return [];
   }
 
-  /** Atomic write: temp file in same dir + rename. */
+  /** Atomic write: temp file in same dir + rename with Windows retry backoff. */
   save(records: SessionRecord[]): void {
     const dir = path.dirname(this.filePath);
     fs.mkdirSync(dir, { recursive: true });
     const payload: SessionStoreFile = { version: 1, sessions: records };
+    const randSuffix = Math.random().toString(36).slice(2, 8);
     const tmp = path.join(
       dir,
-      `.${path.basename(this.filePath)}.${process.pid}.${Date.now()}.tmp`,
+      `.${path.basename(this.filePath)}.${process.pid}.${Date.now()}.${randSuffix}.tmp`,
     );
     const data = JSON.stringify(payload, null, 2) + '\n';
     fs.writeFileSync(tmp, data, 'utf8');
-    try {
-      fs.renameSync(tmp, this.filePath);
-    } catch (err) {
-      // Windows: rename over existing may fail — unlink then rename
+
+    const maxAttempts = 10;
+    let lastError: unknown = null;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        if (fs.existsSync(this.filePath)) fs.unlinkSync(this.filePath);
         fs.renameSync(tmp, this.filePath);
-      } catch (err2) {
+        return;
+      } catch (err: any) {
+        lastError = err;
+        // On Windows: rename over existing may throw EPERM / EEXIST / EBUSY
         try {
-          fs.unlinkSync(tmp);
-        } catch {
-          /* ignore */
+          if (fs.existsSync(this.filePath)) {
+            fs.unlinkSync(this.filePath);
+          }
+          fs.renameSync(tmp, this.filePath);
+          return;
+        } catch (err2: any) {
+          lastError = err2 ?? err;
+          const code = (lastError as any)?.code;
+          if (
+            (code === 'EPERM' || code === 'EBUSY' || code === 'EACCES' || code === 'EEXIST') &&
+            attempt < maxAttempts
+          ) {
+            sleepSync(10 * attempt + Math.floor(Math.random() * 10));
+            continue;
+          }
         }
-        throw err2 ?? err;
       }
     }
+
+    // Cleanup temp file on final failure
+    try {
+      if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
+    } catch {
+      /* ignore */
+    }
+    throw lastError;
   }
 
   upsert(record: SessionRecord): void {

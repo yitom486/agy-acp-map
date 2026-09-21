@@ -21,8 +21,8 @@ export function createDualAcpApp(
     typeof sharedServiceOrCore.initializeV1 === 'function' &&
     typeof sharedServiceOrCore.initializeV2 === 'function'
   ) {
-    v1App = createAcpV1App(sharedServiceOrCore);
-    v2App = createAcpV2App(sharedServiceOrCore);
+    v1App = createAcpV1App(sharedServiceOrCore.v1 ?? sharedServiceOrCore);
+    v2App = createAcpV2App(sharedServiceOrCore.v2 ?? sharedServiceOrCore);
   } else if (sharedServiceOrCore instanceof AgySessionCore) {
     v1App = createAcpV1App(new AgyAcpV1Service(sharedServiceOrCore));
     v2App = createAcpV2App(new AgyAcpV2Service(sharedServiceOrCore));

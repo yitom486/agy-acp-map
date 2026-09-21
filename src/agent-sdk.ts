@@ -32,10 +32,14 @@ export class AgyAcpService {
   readonly v1: AgyAcpV1Service;
   readonly v2: AgyAcpV2Service;
 
-  constructor(core: AgySessionCore = new AgySessionCore()) {
-    this.core = core;
-    this.v1 = new AgyAcpV1Service(core);
-    this.v2 = new AgyAcpV2Service(core);
+  constructor(coreOrOptions?: AgySessionCore | { sessionStore?: any }) {
+    if (coreOrOptions instanceof AgySessionCore) {
+      this.core = coreOrOptions;
+    } else {
+      this.core = new AgySessionCore(coreOrOptions);
+    }
+    this.v1 = new AgyAcpV1Service(this.core);
+    this.v2 = new AgyAcpV2Service(this.core);
   }
 
   async initialize(): Promise<any> {
@@ -89,6 +93,7 @@ export class AgyAcpService {
   promptSession(
     params: any,
     notifyClient: (update: any) => Promise<void> | void,
+    opts?: { isPreLocked?: boolean },
   ): Promise<{ stopReason: string }> {
     const targetSession = this.core.sessions.get(params?.sessionId);
     const version: ProtocolVersion =
@@ -97,7 +102,7 @@ export class AgyAcpService {
         ? 2
         : 1;
     return version === 2
-      ? this.v2.promptSession(params, notifyClient)
+      ? this.v2.promptSession(params, notifyClient, opts)
       : this.v1.promptSession(params, notifyClient);
   }
 }

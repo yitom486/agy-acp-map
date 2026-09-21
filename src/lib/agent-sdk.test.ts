@@ -1,10 +1,16 @@
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
+import fs from 'node:fs';
 import path from 'node:path';
 import { AgyAcpService, createAcpV1App, createAcpV2App, createDualAcpApp, AGENT_INFO } from '../agent-sdk.ts';
 import { setCachedDiscoveryForTest, clearDiscoveryCache } from './agy-discovery.ts';
 
 describe('AgyAcpService & SDK Agent', () => {
+  let originalStore: string | undefined;
+  const tmpStore = path.resolve(import.meta.dir, `../../scratch/test-store-agent-sdk-${process.pid}-${Date.now()}.json`);
+
   beforeAll(() => {
+    originalStore = process.env.AGY_ACP_SESSION_STORE;
+    process.env.AGY_ACP_SESSION_STORE = tmpStore;
     setCachedDiscoveryForTest({
       availableModels: ['gemini-3.8-flash-high', 'gemini-3.8-flash-low'],
       availableAgents: ['coder', 'architect'],
@@ -12,7 +18,17 @@ describe('AgyAcpService & SDK Agent', () => {
   });
 
   afterAll(() => {
+    if (originalStore !== undefined) {
+      process.env.AGY_ACP_SESSION_STORE = originalStore;
+    } else {
+      delete process.env.AGY_ACP_SESSION_STORE;
+    }
     clearDiscoveryCache();
+    try {
+      if (fs.existsSync(tmpStore)) fs.unlinkSync(tmpStore);
+    } catch {
+      /* ignore */
+    }
   });
 
   test('initialize returns catalog metadata without leaking non-standard protocol fields', async () => {

@@ -74,6 +74,7 @@ export class AgyAcpV2Service {
   async promptSession(
     params: any,
     notifyClient: (update: any) => Promise<void> | void,
+    opts?: { isPreLocked?: boolean },
   ): Promise<{ stopReason: string }> {
     // Notify running state at the start of prompt processing
     await notifyClient({
@@ -83,12 +84,17 @@ export class AgyAcpV2Service {
 
     let stopReason = 'end_turn';
     try {
-      const outcome = await this.core.promptTurn(params, 2, async (update) => {
-        const formatted = formatUpdateForProtocol(update, 2);
-        if (formatted) {
-          await notifyClient(formatted);
-        }
-      });
+      const outcome = await this.core.promptTurn(
+        params,
+        2,
+        async (update) => {
+          const formatted = formatUpdateForProtocol(update, 2);
+          if (formatted) {
+            await notifyClient(formatted);
+          }
+        },
+        opts,
+      );
       stopReason = outcome?.stopReason || 'end_turn';
       return { stopReason };
     } catch (err) {

@@ -42,26 +42,56 @@ export function createAcpV2App(service: AgyAcpV2Service | any = new AgyAcpV2Serv
         throw new v2.RequestError(-32002, 'session is busy; wait for idle or cancel');
       }
 
-      // Mark busy immediately so concurrent calls are rejected
+      // Synchronous pre-validation: prompt must be a non-empty array with valid content
+      const promptBlocks = params?.prompt;
+      if (!promptBlocks || !Array.isArray(promptBlocks) || promptBlocks.length === 0) {
+        throw new v2.RequestError(-32602, 'Invalid params: prompt must be a non-empty array of content blocks');
+      }
+      const hasContent = promptBlocks.some((b: any) => {
+        if (!b || typeof b !== 'object') return false;
+        if (b.type === 'text' && typeof b.text === 'string' && b.text.trim().length > 0) return true;
+        if (b.type === 'image' || b.type === 'resource') return true;
+        return false;
+      });
+      if (!hasContent) {
+        throw new v2.RequestError(-32602, 'Invalid params: prompt contains no text or content');
+      }
+
+      // Mark busy immediately so concurrent calls are rejected synchronously
       session.busy = true;
 
-      // Start work in the next event-loop tick so the ACK response is queued on stdout before
+      // Start work in next event-loop tick so the ACK response is queued on stdout before
       // any session updates from the turn, strictly adhering to canonical ACP v2 architecture.
       setTimeout(() => {
-        session.busy = false;
+        // If session was closed or deleted while queued in event loop, abort safely
+        if (!service.core.sessions.has(sessionId)) {
+          return;
+        }
+
         service
-          .promptSession({ ...params, protocolVersion: 2 }, (update: any) => {
-            return (client as any).notify(v2.methods.client.session.update, {
-              sessionId,
-              update,
-            });
-          })
+          .promptSession(
+            { ...params, protocolVersion: 2 },
+            (update: any) => {
+              return (client as any).notify(v2.methods.client.session.update, {
+                sessionId,
+                update,
+              });
+            },
+            { isPreLocked: true },
+          )
           .catch((err: any) => {
             console.error('[ACP-V2] Background prompt turn error:', err);
+          })
+          .finally(() => {
+            // Strictly reset busy state ONLY after promptSession has completely finished or failed
+            const current = service.core.sessions.get(sessionId);
+            if (current) {
+              current.busy = false;
+            }
           });
       }, 0);
 
-      // In ACP v2 draft, session/prompt acknowledges receipt immediately with {}
+      // In ACP v2 (@agentclientprotocol/sdk@1.4.0), session/prompt acknowledges receipt immediately with {}
       return {};
     })
     .onNotification(v2.methods.agent.session.cancel, (ctx) => service.cancelSession(ctx.params));
