@@ -199,4 +199,31 @@ describe('escalateKill / waitForExit', () => {
     forceKill(child); // should not throw
     expect(DEFAULT_GRACE_MS).toBeGreaterThan(0);
   });
+
+  test('waitForExit resolves fast on failed spawn (error+close, no exit)', async () => {
+    // Regression: warmup on machines without agy leaves a broken child;
+    // kill() must not hang waiting for an 'exit' that never fires.
+    const child = spawn('/no/such/agy-binary-xyz-0.1.4', [], { stdio: 'ignore' });
+    child.on('error', () => {});
+    const start = Date.now();
+    const ok = await waitForExit(child, 5000);
+    expect(Date.now() - start).toBeLessThan(2000);
+    expect(ok).toBe(true);
+  });
+
+  test('manager kill resolves fast right after a failed spawn', async () => {
+    const mgr = new AgyProcessManager();
+    await mgr.spawn({
+      bin: '/no/such/agy-binary-xyz-0.1.4',
+      args: [],
+      cwd: process.cwd(),
+      onEvent: () => {},
+      onError: () => {},
+      onExit: () => {},
+    });
+    // No grace period for the error event: kill must still settle quickly.
+    const start = Date.now();
+    await mgr.kill({ awaitExit: true, graceMs: 200 });
+    expect(Date.now() - start).toBeLessThan(3000);
+  });
 });

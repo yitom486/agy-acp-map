@@ -255,6 +255,12 @@ export class AgyProcessManager {
     }
     const child = this.child;
     if (!child) return;
+    if (hasNoProcess(child)) {
+      // Spawn failed before an OS process existed (e.g. ENOENT on CI
+      // machines without agy): drop the handle, never wait on it.
+      if (this.child === child) this.child = null;
+      return;
+    }
 
     const graceMs = opts?.graceMs ?? DEFAULT_GRACE_MS;
     const waitExitMs = opts?.waitExitMs ?? DEFAULT_WAIT_EXIT_MS;
@@ -298,6 +304,11 @@ export class AgyProcessManager {
   }
 }
 
+/** True when spawn never produced an OS process (e.g. ENOENT): nothing to signal or wait for. */
+function hasNoProcess(child: ChildProcess): boolean {
+  return typeof (child as { pid?: unknown }).pid !== 'number';
+}
+
 /**
  * Soft → hard kill sequence (cross-platform).
  * Windows: child.kill('SIGINT') may be no-op; we still try SIGTERM then force.
@@ -307,6 +318,7 @@ export async function escalateKill(
   graceMs = DEFAULT_GRACE_MS,
 ): Promise<void> {
   if (child.exitCode != null || child.signalCode != null) return;
+  if (hasNoProcess(child)) return;
 
   trySignal(child, 'SIGINT');
   const exited = await waitForExit(child, graceMs);
@@ -335,6 +347,7 @@ function trySignal(child: ChildProcess, signal: NodeJS.Signals): void {
  */
 export function forceKill(child: ChildProcess): void {
   if (child.exitCode != null || child.signalCode != null) return;
+  if (hasNoProcess(child)) return;
 
   if (process.platform === 'win32' && typeof child.pid === 'number') {
     try {
@@ -370,14 +383,20 @@ export function waitForExit(child: ChildProcess, timeoutMs: number): Promise<boo
       cleanup();
       resolve(ok);
     };
+    // NOTE: a failed spawn (ENOENT) emits 'error' + 'close' but never 'exit'
+    // on some platforms. Listening to 'close' too keeps kill() from hanging
+    // on broken children (e.g. warmup racing a missing agy binary on CI).
     const onExit = () => done(true);
+    const onClose = () => done(true);
     const timer = setTimeout(() => done(false), timeoutMs);
     timer.unref?.();
     const cleanup = () => {
       clearTimeout(timer);
       child.removeListener('exit', onExit);
+      child.removeListener('close', onClose);
     };
     child.once('exit', onExit);
+    child.once('close', onClose);
   });
 }
 
@@ -386,7 +405,7 @@ export async function killAgyChild(
   child: ChildProcess | null | undefined,
   opts?: { graceMs?: number; waitExitMs?: number },
 ): Promise<void> {
-  if (!child) return;
+  if (!child || hasNoProcess(child)) return;
   await escalateKill(child, opts?.graceMs ?? DEFAULT_GRACE_MS);
   await waitForExit(child, opts?.waitExitMs ?? DEFAULT_WAIT_EXIT_MS);
   if (child.exitCode == null && child.signalCode == null) {
