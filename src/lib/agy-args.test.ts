@@ -11,6 +11,7 @@ import {
   resolveSandbox,
   resolveDisableSlashCommands,
   resolvePrintTimeout,
+  modelContextWindow,
   SAFETY_TIERS,
 } from './agy-args.ts';
 
@@ -303,6 +304,18 @@ describe('resolveSafety three tiers', () => {
     expect(normalizeSafety('safe')).toBe('safe');
     expect(normalizeSafety('autonomous')).toBe('autonomous');
     expect(normalizeSafety('nope')).toBeUndefined();
+  });
+
+  test('modelContextWindow uses real windows, env override wins', () => {
+    expect(modelContextWindow('gemini-3.8-flash-high', {})).toBe(1_048_576);
+    expect(modelContextWindow('gemini-3.6-flash-low', {})).toBe(1_048_576);
+    expect(modelContextWindow('claude-sonnet-4-6', {})).toBe(1_000_000);
+    expect(modelContextWindow('claude-opus-4-6-thinking', {})).toBe(1_000_000);
+    expect(modelContextWindow('gpt-oss-120b-medium', {})).toBe(131_072);
+    expect(modelContextWindow('mystery-model', {})).toBe(200_000);
+    expect(modelContextWindow(undefined, {})).toBe(200_000);
+    expect(modelContextWindow('gemini-3.8-flash-high', { AGY_ACP_CONTEXT_SIZE: '500000' })).toBe(500_000);
+    expect(modelContextWindow('gemini-3.8-flash-high', { AGY_ACP_CONTEXT_SIZE: 'nope' })).toBe(1_048_576);
   });
 });
 

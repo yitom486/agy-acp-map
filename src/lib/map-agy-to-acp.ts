@@ -10,6 +10,7 @@ import {
 } from './rich-content.ts';
 import path from 'node:path';
 import { STAGING_DIRNAME } from './prompt-normalize.ts';
+import { modelContextWindow } from './agy-args.ts';
 
 export interface MapperState {
   conversationId?: string;
@@ -327,6 +328,46 @@ function emitImageAgentChunks(
   }
 }
 
+interface AgyUsage {
+  total_tokens?: number;
+  thinking_tokens?: number;
+  input_tokens?: number;
+  output_tokens?: number;
+}
+
+/**
+ * Build a usage_update from an agy usage block.
+ *
+ * `used` is the cumulative INPUT count (the actual context fill — agy
+ * resends system prompt + tool schemas + full history every step, which is
+ * why it climbs fast and why output tokens must not be folded in twice).
+ * `size` is the model's real window (never a moving max(used) target, so an
+ * overflow stays visible instead of self-normalizing to 100%).
+ */
+function toUsageUpdate(
+  sessionId: string,
+  usage: unknown,
+  model?: string,
+): AcpNotification | null {
+  const u = usage as AgyUsage | undefined;
+  const used = typeof u?.input_tokens === 'number' ? u.input_tokens : u?.total_tokens;
+  if (typeof used !== 'number') return null;
+  // agy never streams thought text (thinking only surfaces as token
+  // counts), so expose the breakdown for clients/debugging instead of
+  // fabricating reasoning content.
+  const meta: Record<string, unknown> = {};
+  if (typeof u?.thinking_tokens === 'number') meta.thinkingTokens = u.thinking_tokens;
+  if (typeof u?.input_tokens === 'number') meta.inputTokens = u.input_tokens;
+  if (typeof u?.output_tokens === 'number') meta.outputTokens = u.output_tokens;
+  if (typeof u?.total_tokens === 'number') meta.totalTokens = u.total_tokens;
+  return notify(sessionId, {
+    sessionUpdate: 'usage_update',
+    used,
+    size: modelContextWindow(model),
+    ...(Object.keys(meta).length ? { _meta: meta } : {}),
+  });
+}
+
 function mapStopReason(status: unknown, error: unknown): string {
   const s = String(status || '').toUpperCase();
   if (s === 'CANCELLED' || s === 'CANCELED' || s === 'INTERRUPTED' || s === 'ABORT' || s === 'ABORTED') {
@@ -342,6 +383,11 @@ function mapStopReason(status: unknown, error: unknown): string {
   return 'end_turn';
 }
 
+export interface MapAgyEventOpts {
+  /** Session model id; selects the real context window for usage_update.size. */
+  model?: string;
+}
+
 /**
  * Map one agy NDJSON event object into zero or more ACP session/update notifications.
  */
@@ -349,6 +395,7 @@ export function mapAgyEvent(
   sessionId: string,
   event: unknown,
   state: MapperState,
+  opts?: MapAgyEventOpts,
 ): { notifications: AcpNotification[]; state: MapperState } {
   const notifications: AcpNotification[] = [];
   if (!event || typeof event !== 'object') {
@@ -405,6 +452,12 @@ export function mapAgyEvent(
           }),
         );
       }
+
+      // Progressive quota: agy step_updates already carry the cumulative
+      // input count, so Zed's % climbs during the turn instead of jumping
+      // once at result time. Replace semantics — latest wins.
+      const stepUsage = toUsageUpdate(sessionId, s.usage, opts?.model);
+      if (stepUsage) notifications.push(stepUsage);
 
       return { notifications, state };
     }
@@ -492,26 +545,8 @@ export function mapAgyEvent(
     const r = (ev.result || {}) as Record<string, unknown>;
     if (r.conversation_id) state.conversationId = r.conversation_id as string;
 
-    const usage = r.usage as
-      | { total_tokens?: number; thinking_tokens?: number; input_tokens?: number; output_tokens?: number }
-      | undefined;
-    if (usage && typeof usage.total_tokens === 'number') {
-      // agy never streams thought text (thinking only surfaces as token
-      // counts), so expose the breakdown for clients/debugging instead of
-      // fabricating reasoning content.
-      const meta: Record<string, unknown> = {};
-      if (typeof usage.thinking_tokens === 'number') meta.thinkingTokens = usage.thinking_tokens;
-      if (typeof usage.input_tokens === 'number') meta.inputTokens = usage.input_tokens;
-      if (typeof usage.output_tokens === 'number') meta.outputTokens = usage.output_tokens;
-      notifications.push(
-        notify(sessionId, {
-          sessionUpdate: 'usage_update',
-          used: usage.total_tokens,
-          size: Math.max(200_000, usage.total_tokens),
-          ...(Object.keys(meta).length ? { _meta: meta } : {}),
-        }),
-      );
-    }
+    const resultUsage = toUsageUpdate(sessionId, r.usage, opts?.model);
+    if (resultUsage) notifications.push(resultUsage);
 
     // Surface structured_output (e.g. from --json-schema) as a final JSON message chunk
     if (r.structured_output !== undefined && r.structured_output !== null) {

@@ -289,7 +289,7 @@ See also `docs/AGY_ACP_MAP_ANALYSIS.zh-CN.md` (analysis kept; P0 items addressed
 - History replay is intentionally minimal: no tool results, thoughts, images, partial replay cursors, or forked-session transcript reconstruction. Client / zustand still owns the live transcript; agy remains the source of model context.
 - Image input depends on agy `view_file` / vision actually reading the staged path.
 - Image output inlining is best-effort (path detection + 2MB cap); `generate_image` may be slow or gated.
-- `usage_update.size` is a soft floor (200k).
+- `usage_update.size` is the model's real context window (`modelContextWindow`: gemini-3.x 1,048,576; claude 4.6 1,000,000; gpt-oss-120b 131,072; unknown 200k; override via `AGY_ACP_CONTEXT_SIZE`). `used` is cumulative input tokens; step-level updates stream progress, `result` finalizes.
 - Structured `--json-schema` output: mapper surfaces `result.structured_output` as a fenced JSON `agent_message_chunk` plus `_meta.structuredOutput`.
 - Third-party bridge — review Google ToS yourself. 第三方工程桥接，请自行评估 ToS。
 

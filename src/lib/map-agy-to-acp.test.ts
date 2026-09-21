@@ -198,8 +198,43 @@ describe('mapAgyEvent', () => {
       },
     }, state);
     const usage = notifications.find((n) => n.params.update.sessionUpdate === 'usage_update');
-    expect(usage!.params.update.used).toBe(100);
-    expect(usage!.params.update._meta).toMatchObject({ thinkingTokens: 20, inputTokens: 70, outputTokens: 10 });
+    // used = input side (context fill), NOT input+output double count
+    expect(usage!.params.update.used).toBe(70);
+    expect(usage!.params.update.size).toBe(200_000);
+    expect(usage!.params.update._meta).toMatchObject({ thinkingTokens: 20, inputTokens: 70, outputTokens: 10, totalTokens: 100 });
+  });
+
+  test('real wire shape: usage size follows session model window', () => {
+    const state = createMapperState();
+    const { notifications } = mapAgyEvent('s1', {
+      event: 'result',
+      result: {
+        status: 'SUCCESS',
+        conversation_id: 'c1',
+        response: 'done',
+        usage: { total_tokens: 189000, input_tokens: 185000, output_tokens: 4000 },
+      },
+    }, state, { model: 'gemini-3.8-flash-high' });
+    const usage = notifications.find((n) => n.params.update.sessionUpdate === 'usage_update');
+    expect(usage!.params.update.used).toBe(185000);
+    // 185k/1048576 ≈ 18% — not the 95% the legacy 200k floor produced
+    expect(usage!.params.update.size).toBe(1_048_576);
+  });
+
+  test('real wire shape: agent_response step usage emits progressive update', () => {
+    const state = createMapperState();
+    const { notifications } = mapAgyEvent('s1', {
+      event: 'step_update',
+      step_update: {
+        step_index: 1,
+        step_type: 'agent_response',
+        state: 'DONE',
+        usage: { input_tokens: 12567, output_tokens: 294, total_tokens: 12861 },
+      },
+    }, state, { model: 'gemini-3.8-flash-high' });
+    const usage = notifications.find((n) => n.params.update.sessionUpdate === 'usage_update');
+    expect(usage!.params.update.used).toBe(12567);
+    expect(usage!.params.update.size).toBe(1_048_576);
   });
 
   test('result SUCCESS → idle end_turn + usage', () => {

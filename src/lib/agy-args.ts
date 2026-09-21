@@ -103,6 +103,40 @@ export function normalizeSandbox(v: unknown): boolean | undefined {
 /** Canonical safety tier values (also listed on BRIDGE_CAPABILITIES.safetyTiers). */
 export const SAFETY_TIERS = ['safe', 'autonomous', 'autonomous-unsandboxed'] as const;
 
+/** Legacy denominator kept only for unknown models (see modelContextWindow). */
+export const DEFAULT_CONTEXT_SIZE = 200_000;
+
+/**
+ * Real input context window per model family, used as usage_update.size.
+ *
+ * Verified 2026-09: gemini-3.x flash = 1,048,576 input tokens;
+ * claude sonnet-4-6 / opus-4-6 = 1,000,000; gpt-oss-120b = 131,072.
+ * Unknown models fall back to DEFAULT_CONTEXT_SIZE (explicitly pessimistic).
+ *
+ * Override for any model via AGY_ACP_CONTEXT_SIZE (plain number, e.g. "1000000").
+ */
+export function modelContextWindow(
+  model: unknown,
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const override = normalizeContextSize(env.AGY_ACP_CONTEXT_SIZE);
+  if (override !== undefined) return override;
+  const m = typeof model === 'string' ? model.trim().toLowerCase() : '';
+  if (!m) return DEFAULT_CONTEXT_SIZE;
+  if (m.startsWith('gemini-3')) return 1_048_576;
+  if (m.includes('sonnet-4-6') || m.includes('opus-4-6')) return 1_000_000;
+  if (m.includes('gpt-oss-120b')) return 131_072;
+  if (m.includes('claude')) return 200_000;
+  return DEFAULT_CONTEXT_SIZE;
+}
+
+function normalizeContextSize(v: unknown): number | undefined {
+  if (v === undefined || v === null || v === '') return undefined;
+  const n = Number(String(v).trim().replace(/_/g, ''));
+  if (!Number.isFinite(n) || n <= 0) return undefined;
+  return Math.floor(n);
+}
+
 /**
  * Normalize safety mode.
  * Accepts: safe | autonomous | auto | autonomous-unsandboxed | autonomous_unsandboxed | unsandboxed

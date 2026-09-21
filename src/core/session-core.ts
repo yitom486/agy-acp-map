@@ -155,7 +155,9 @@ export class AgySessionCore {
         onEvent: (event: any) => {
           if (session.deleted || !this.sessions.has(sessionId)) return;
           try {
-            const { state } = mapAgyEvent(session.sessionId, event, session.mapper);
+            const { state } = mapAgyEvent(session.sessionId, event, session.mapper, {
+              model: session.model,
+            });
             session.mapper = state;
             if (state.conversationId && state.conversationId !== session.conversationId) {
               session.conversationId = state.conversationId;
@@ -875,7 +877,9 @@ export class AgySessionCore {
             }
           }
 
-          const { notifications, state } = mapAgyEvent(session.sessionId, event, session.mapper);
+          const { notifications, state } = mapAgyEvent(session.sessionId, event, session.mapper, {
+            model: session.model,
+          });
           session.mapper = state;
           if (state.conversationId && state.conversationId !== session.conversationId) {
             session.conversationId = state.conversationId;
