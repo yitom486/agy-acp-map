@@ -1,5 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AgyAcpService, AGENT_INFO } from '../src/agent-sdk.ts';
@@ -17,7 +18,7 @@ describe('Simulated Integration Tests (Offline Mock CLI)', () => {
   let originalStore: string | undefined;
   const mockCliPath = path.resolve(__dirname, 'fixtures/mock-agy-cli.cjs');
   const testCwd = path.resolve(__dirname, '..');
-  const tmpStore = path.resolve(__dirname, `../scratch/test-store-integration-${process.pid}-${Date.now()}.json`);
+  const tmpStore = path.join(os.tmpdir(), `agy-acp-test-store-integration-${process.pid}-${Date.now()}.json`);
 
   beforeAll(() => {
     originalBin = process.env.AGY_BIN;
@@ -261,7 +262,7 @@ describe('Simulated Integration Tests (Offline Mock CLI)', () => {
       const { sessionId } = await v1Service.newSession({ cwd: testCwd });
 
       // Attempt resume from V2 must be rejected
-      await expect(v2Service.resumeSession({ sessionId })).rejects.toThrow(/created with ACP v1/);
+      await expect(v2Service.resumeSession({ sessionId, cwd: testCwd })).rejects.toThrow(/created with ACP v1/);
 
       // Attempt prompt from V2 must be rejected
       await expect(
@@ -284,7 +285,7 @@ describe('Simulated Integration Tests (Offline Mock CLI)', () => {
       const { sessionId } = await v2Service.newSession({ cwd: testCwd });
 
       // Attempt resume from V1 must be rejected
-      await expect(v1Service.resumeSession({ sessionId })).rejects.toThrow(/created with ACP v2/);
+      await expect(v1Service.resumeSession({ sessionId, cwd: testCwd })).rejects.toThrow(/created with ACP v2/);
 
       // Attempt prompt from V1 must be rejected
       await expect(
@@ -315,7 +316,7 @@ describe('Simulated Integration Tests (Offline Mock CLI)', () => {
       });
 
       // V1 resume succeeds
-      const v1Resumed = await v1Service.resumeSession({ sessionId: legacySessionId });
+      const v1Resumed = await v1Service.resumeSession({ sessionId: legacySessionId, cwd: testCwd });
       expect(v1Resumed.configOptions).toBeDefined();
       expect(core.sessions.has(legacySessionId)).toBe(true);
 
@@ -323,7 +324,7 @@ describe('Simulated Integration Tests (Offline Mock CLI)', () => {
       await v1Service.closeSession({ sessionId: legacySessionId });
 
       // V2 resume MUST be rejected because legacy session defaulted to v1
-      await expect(v2Service.resumeSession({ sessionId: legacySessionId })).rejects.toThrow(
+      await expect(v2Service.resumeSession({ sessionId: legacySessionId, cwd: testCwd })).rejects.toThrow(
         /created with ACP v1 and cannot be resumed with v2/,
       );
 
@@ -372,7 +373,7 @@ describe('Simulated Integration Tests (Offline Mock CLI)', () => {
 
       // Verify nextCursor behavior based on total session count
       if (listResult.sessions.length < 50) {
-        expect(listResult.nextCursor).toBeNull();
+        expect(listResult.nextCursor).toBeFalsy();
       } else {
         expect(typeof listResult.nextCursor).toBe('string');
         const page2 = await v1Service.listSessions({ cwd: testCwd, cursor: listResult.nextCursor });
@@ -406,6 +407,16 @@ describe('Simulated Integration Tests (Offline Mock CLI)', () => {
         // Invalid cursor token rejection
         await expect(v1Service.listSessions({ cwd: testCwd, cursor: 'invalid!cursor!token' })).rejects.toThrow(
           /Invalid cursor token/,
+        );
+
+        // Plain numeric cursor rejection (strictly opaque)
+        await expect(v1Service.listSessions({ cwd: testCwd, cursor: '50' })).rejects.toThrow(
+          /Invalid cursor token/,
+        );
+
+        // Relative cwd rejection
+        await expect(v1Service.listSessions({ cwd: 'relative/dir' })).rejects.toThrow(
+          /cwd must be an absolute path/,
         );
       } finally {
         for (const id of createdIds) {
@@ -489,17 +500,25 @@ describe('Simulated Integration Tests (Offline Mock CLI)', () => {
         // Prompt with whitespace only
         await expect(
           ctx.request('session/prompt' as any, { sessionId, prompt: [{ type: 'text', text: '   ' }] } as any)
-        ).rejects.toThrow(/prompt contains no text or content/);
+        ).rejects.toThrow(/prompt contains no valid/);
 
         await ctx.request('session/delete' as any, { sessionId } as any);
       });
     });
 
-    test('session/resume validates cwd and additionalDirectories strictly', async () => {
+    test('session/resume validates cwd, replayFrom, mcpServers, and additionalDirectories strictly', async () => {
       const core = new AgySessionCore();
       const v1Service = new AgyAcpV1Service(core);
 
-      const { sessionId } = await v1Service.newSession({ cwd: testCwd });
+      const { sessionId } = await v1Service.newSession({
+        cwd: testCwd,
+        additionalDirectories: [path.resolve(testCwd, 'tests')],
+      });
+
+      // Missing cwd rejected
+      await expect(v1Service.resumeSession({ sessionId })).rejects.toThrow(
+        /cwd is required for session\/resume/,
+      );
 
       // Relative cwd rejected
       await expect(v1Service.resumeSession({ sessionId, cwd: 'relative/path' })).rejects.toThrow(
@@ -512,13 +531,77 @@ describe('Simulated Integration Tests (Offline Mock CLI)', () => {
         /cwd does not exist or is not a directory/,
       );
 
+      // Mismatched cwd rejected
+      const otherValidDir = path.resolve(testCwd, '..');
+      await expect(v1Service.resumeSession({ sessionId, cwd: otherValidDir })).rejects.toThrow(
+        /cwd does not match session cwd/,
+      );
+
+      // Unsupported replayFrom rejected
+      await expect(
+        v1Service.resumeSession({ sessionId, cwd: testCwd, replayFrom: { type: 'start' } }),
+      ).rejects.toThrow(/replayFrom is not supported/);
+
+      // Non-empty mcpServers rejected
+      await expect(
+        v1Service.resumeSession({ sessionId, cwd: testCwd, mcpServers: [{ name: 'dummy' }] }),
+      ).rejects.toThrow(/mcpServers are not supported/);
+
       // Non-array additionalDirectories rejected
-      await expect(v1Service.resumeSession({ sessionId, additionalDirectories: 'not-an-array' })).rejects.toThrow(
+      await expect(v1Service.resumeSession({ sessionId, cwd: testCwd, additionalDirectories: 'not-an-array' })).rejects.toThrow(
         /additionalDirectories must be an array/,
       );
 
+      // Omitted additionalDirectories resets active additional directories to []
+      await v1Service.resumeSession({ sessionId, cwd: testCwd });
+      const currentSession = core.sessions.get(sessionId);
+      expect(currentSession?.additionalDirectories).toEqual([]);
+
       // Clean up
       await v1Service.deleteSession({ sessionId });
+    });
+
+    test('deleteSession prevents late finish or callback from resurrecting session in store', async () => {
+      const core = new AgySessionCore();
+      const v1Service = new AgyAcpV1Service(core);
+      const { sessionId } = await v1Service.newSession({ cwd: testCwd });
+      const session = core.sessions.get(sessionId)!;
+
+      // Delete session immediately
+      await v1Service.deleteSession({ sessionId });
+      expect(core.sessions.has(sessionId)).toBe(false);
+      expect(core.sessionStore.get(sessionId)).toBeUndefined();
+
+      // Attempt to invoke persistSession on the deleted session object
+      core.persistSession(session);
+      // It MUST not resurrect the session in the store!
+      expect(core.sessionStore.get(sessionId)).toBeUndefined();
+    });
+
+    test('validatePromptBlocks accepts resource_link and rejects empty media blocks', async () => {
+      const { validatePromptBlocks } = await import('../src/lib/prompt-normalize.ts');
+
+      // Valid text
+      expect(validatePromptBlocks([{ type: 'text', text: 'hello' }]).ok).toBe(true);
+
+      // Valid resource_link
+      expect(validatePromptBlocks([{ type: 'resource_link', uri: 'file:///example.ts' }]).ok).toBe(true);
+      expect(validatePromptBlocks([{ type: 'resource_link', name: 'my-link' }]).ok).toBe(true);
+
+      // Valid embedded resource
+      expect(validatePromptBlocks([{ type: 'resource', resource: { text: 'content' } }]).ok).toBe(true);
+
+      // Valid image with data
+      expect(validatePromptBlocks([{ type: 'image', data: 'aGVsbG8=' }]).ok).toBe(true);
+
+      // Invalid: empty image block without data/uri
+      expect(validatePromptBlocks([{ type: 'image' }]).ok).toBe(false);
+
+      // Invalid: empty resource without text/blob
+      expect(validatePromptBlocks([{ type: 'resource', resource: {} }]).ok).toBe(false);
+
+      // Invalid: empty resource_link
+      expect(validatePromptBlocks([{ type: 'resource_link' }]).ok).toBe(false);
     });
   });
 });

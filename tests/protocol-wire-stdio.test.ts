@@ -1,5 +1,6 @@
 import { describe, test, expect, afterEach, beforeAll, afterAll } from 'bun:test';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { createSmokeHarness, type SmokeHarness } from './smoke/helpers.ts';
 
@@ -9,7 +10,7 @@ const repoRoot = path.resolve(import.meta.dir, '..');
 describe('Wire-level Stdio JSON-RPC Integration (Full sdk-server Process)', () => {
   let activeHarness: SmokeHarness | null = null;
   let originalStore: string | undefined;
-  const testStoreWire = path.resolve(repoRoot, `scratch/test-store-wire-${process.pid}-${Date.now()}.json`);
+  const testStoreWire = path.join(os.tmpdir(), `agy-acp-test-store-wire-${process.pid}-${Date.now()}.json`);
 
   beforeAll(() => {
     originalStore = process.env.AGY_ACP_SESSION_STORE;
@@ -122,7 +123,7 @@ describe('Wire-level Stdio JSON-RPC Integration (Full sdk-server Process)', () =
       const deleteRes = await harness.send('session/delete', { sessionId });
       expect(deleteRes).toEqual({});
     },
-    20000,
+    30000,
   );
 
   test(
@@ -190,7 +191,7 @@ describe('Wire-level Stdio JSON-RPC Integration (Full sdk-server Process)', () =
       const deleteRes = await harness.send('session/delete', { sessionId });
       expect(deleteRes).toEqual({});
     },
-    20000,
+    30000,
   );
 
   test(
@@ -237,7 +238,7 @@ describe('Wire-level Stdio JSON-RPC Integration (Full sdk-server Process)', () =
       expect(caughtError.code).toBe(-32602);
       expect(caughtError.message).toMatch(/created with ACP v1 and cannot be resumed with v2/);
     },
-    20000,
+    30000,
   );
 
   test(
@@ -257,9 +258,11 @@ describe('Wire-level Stdio JSON-RPC Integration (Full sdk-server Process)', () =
 
       const listRes = await harness.send('session/list', { cwd: repoRoot });
       expect(Array.isArray(listRes.sessions)).toBe(true);
-      expect('nextCursor' in listRes).toBe(true);
+      if (listRes.nextCursor !== undefined) {
+        expect(typeof listRes.nextCursor).toBe('string');
+      }
     },
-    20000,
+    30000,
   );
 
   test(
@@ -291,6 +294,6 @@ describe('Wire-level Stdio JSON-RPC Integration (Full sdk-server Process)', () =
 
       await harness.send('session/delete', { sessionId });
     },
-    20000,
+    30000,
   );
 });

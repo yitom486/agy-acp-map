@@ -408,6 +408,85 @@ export function cleanupSessionStaging(
   return res;
 }
 
+export interface PromptValidationResult {
+  ok: boolean;
+  reason?: string;
+}
+
+/**
+ * Synchronous pre-validation for ACP Prompt ContentBlocks.
+ * Ensures the prompt is a non-empty array and contains at least one
+ * content block with valid, non-empty data (text, resource, resource_link, image, audio).
+ */
+export function validatePromptBlocks(blocks: unknown): PromptValidationResult {
+  if (!blocks || !Array.isArray(blocks) || blocks.length === 0) {
+    return {
+      ok: false,
+      reason: 'Invalid params: prompt must be a non-empty array of content blocks',
+    };
+  }
+
+  const hasValidContent = blocks.some((b: any) => {
+    if (!b || typeof b !== 'object') return false;
+    const type = b.type;
+
+    if (type === 'text') {
+      return typeof b.text === 'string' && b.text.trim().length > 0;
+    }
+
+    if (type === 'resource_link') {
+      return (
+        (typeof b.uri === 'string' && b.uri.trim().length > 0) ||
+        (typeof b.name === 'string' && b.name.trim().length > 0)
+      );
+    }
+
+    if (type === 'resource') {
+      const r = b.resource;
+      if (!r || typeof r !== 'object') return false;
+      if (typeof r.text === 'string' && r.text.trim().length > 0) return true;
+      if (typeof r.blob === 'string' && r.blob.trim().length > 0) return true;
+      return false;
+    }
+
+    if (type === 'image') {
+      const img = b.image && typeof b.image === 'object' ? { ...b, ...b.image } : b;
+      if (typeof img.data === 'string' && img.data.trim().length > 0) return true;
+      if (typeof img.bytes === 'string' && img.bytes.trim().length > 0) return true;
+      if (typeof img.uri === 'string' && img.uri.trim().length > 0) return true;
+      const src = img.source;
+      if (src && typeof src === 'object' && typeof src.data === 'string' && src.data.trim().length > 0) {
+        return true;
+      }
+      return false;
+    }
+
+    if (type === 'audio') {
+      const aud = b.audio && typeof b.audio === 'object' ? { ...b, ...b.audio } : b;
+      if (typeof aud.data === 'string' && aud.data.trim().length > 0) return true;
+      if (typeof aud.bytes === 'string' && aud.bytes.trim().length > 0) return true;
+      if (typeof aud.uri === 'string' && aud.uri.trim().length > 0) return true;
+      const src = aud.source;
+      if (src && typeof src === 'object' && typeof src.data === 'string' && src.data.trim().length > 0) {
+        return true;
+      }
+      return false;
+    }
+
+    return false;
+  });
+
+  if (!hasValidContent) {
+    return {
+      ok: false,
+      reason: 'Invalid params: prompt contains no valid text, resource, or media content',
+    };
+  }
+
+  return { ok: true };
+}
+
 export {
   STAGING_DIRNAME,
 };
+

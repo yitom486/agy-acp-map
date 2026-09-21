@@ -108,6 +108,7 @@ export interface SdkSession {
   skipPermissions?: boolean;
   disableSlashCommands?: boolean;
   printTimeout?: string;
+  deleted?: boolean;
 }
 
 /**

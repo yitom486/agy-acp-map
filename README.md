@@ -294,9 +294,21 @@ See also `docs/AGY_ACP_MAP_ANALYSIS.zh-CN.md` (analysis kept; P0 items addressed
 Engineering feasibility ≠ legal permission. 即便只用官方 CLI I/O，仍可能受 ToS 约束。
 
 
+## ACP V1 vs V2 Draft Specifications / 协议版本说明
+
+- **ACP V1 (Stable)**: Production-grade implementation fully conforming to canonical ACP v1 JSON-RPC specifications. Includes capability purity (extensions encapsulated under `_meta`), deterministic keyset cursor pagination on `session/list`, atomic session deletion, and strict session/resume semantics (`sessionId` + `cwd` required, cwd matching, omitted `additionalDirectories` reset to empty).
+- **ACP V2 (Draft)**: Experimental v2 draft support built on `@agentclientprotocol/sdk@1.4.0` (`@agentclientprotocol/sdk/experimental/v2`). Conforms to the SDK's schema where `session/prompt` acknowledges prompt acceptance with an immediate `{}` (empty object) response, and subsequent progress is streamed via `session/update` notifications (`state_update: running -> chunks -> state_update: idle`).
+- **Prompt Validation**: All content blocks (`text`, `resource`, `resource_link`, `image`, `audio`) are validated synchronously before sending ACK, preventing background silent failures.
+
+## Windows Black Box & Process Supervision / Windows 无黑框配置
+
+- **Process Supervision**: The bridge spawns all child processes (and executes process tree cleanup via `taskkill /T /F`) using `windowsHide: true`.
+- **Zed / Editor Configuration**: When configuring the bridge in Zed on Windows, point directly to `bun` or `node` with `dist/bin.js` (or a windowless shim) rather than a `.cmd` or `.bat` wrapper. Batch scripts cause `cmd.exe` to flash a console window on launch before passing control to Node/Bun.
+
 ## Bun + TypeScript / Windows
 
 - Runtime is **Bun** (not Node). Entry: `bun src/server.ts` (or `bun run start`).
 - Sources are TypeScript under `src/`; Bun runs `.ts` directly (no emit step).
 - **Windows:** install [Bun](https://bun.sh), ensure `agy` is on `PATH`, then same commands (`bun src/server.ts`, `bun test`, `bun run smoke:all`).
-- Unit tests: `bun test` (files `src/lib/*.test.ts`). Full live matrix: `bun run smoke:all`.
+- Unit & Integration tests: `bun test --timeout 30000`.
+

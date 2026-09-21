@@ -91,7 +91,7 @@ describe('AgyAcpService & SDK Agent', () => {
     const cwd = path.resolve(import.meta.dir, '../../');
     const created = await service.newSession({ cwd, model: 'gemini-3.8-flash-high' });
 
-    const resumed = await service.resumeSession({ sessionId: created.sessionId });
+    const resumed = await service.resumeSession({ sessionId: created.sessionId, cwd });
     expect(resumed._meta?.model).toBe('gemini-3.8-flash-high');
     expect(resumed.sessionId).toBeUndefined();
     expect((resumed.configOptions as any[]).find((option) => option.id === 'model'))
@@ -137,6 +137,7 @@ describe('AgyAcpService & SDK Agent', () => {
 
     const resumed = await service.resumeSession({
       sessionId: created.sessionId,
+      cwd,
       protocolVersion: 2,
     });
     expect((resumed.configOptions as any[]).some((option) => option.configId === 'model')).toBe(true);

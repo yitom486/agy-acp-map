@@ -1,5 +1,6 @@
 import * as v2 from '@agentclientprotocol/sdk/experimental/v2';
 import { AGENT_INFO } from '../core/types.ts';
+import { validatePromptBlocks } from '../lib/prompt-normalize.ts';
 import { AgyAcpV2Service } from './adapter.ts';
 
 /**
@@ -43,18 +44,9 @@ export function createAcpV2App(service: AgyAcpV2Service | any = new AgyAcpV2Serv
       }
 
       // Synchronous pre-validation: prompt must be a non-empty array with valid content
-      const promptBlocks = params?.prompt;
-      if (!promptBlocks || !Array.isArray(promptBlocks) || promptBlocks.length === 0) {
-        throw new v2.RequestError(-32602, 'Invalid params: prompt must be a non-empty array of content blocks');
-      }
-      const hasContent = promptBlocks.some((b: any) => {
-        if (!b || typeof b !== 'object') return false;
-        if (b.type === 'text' && typeof b.text === 'string' && b.text.trim().length > 0) return true;
-        if (b.type === 'image' || b.type === 'resource') return true;
-        return false;
-      });
-      if (!hasContent) {
-        throw new v2.RequestError(-32602, 'Invalid params: prompt contains no text or content');
+      const validation = validatePromptBlocks(params?.prompt);
+      if (!validation.ok) {
+        throw new v2.RequestError(-32602, validation.reason || 'Invalid params: prompt contains no valid content');
       }
 
       // Mark busy immediately so concurrent calls are rejected synchronously
@@ -91,7 +83,10 @@ export function createAcpV2App(service: AgyAcpV2Service | any = new AgyAcpV2Serv
           });
       }, 0);
 
-      // In ACP v2 (@agentclientprotocol/sdk@1.4.0), session/prompt acknowledges receipt immediately with {}
+      // In ACP v2 (@agentclientprotocol/sdk@1.4.0), session/prompt acknowledges receipt immediately with {}.
+      // Note: The installed experimental draft schema in @agentclientprotocol/sdk specifies PromptResponse as
+      // { _meta?: Record<string, unknown> }, where non-meta fields are stripped or rejected by zPromptResponse.
+      // We return {} as the canonical ACK per SDK v2 draft specification.
       return {};
     })
     .onNotification(v2.methods.agent.session.cancel, (ctx) => service.cancelSession(ctx.params));

@@ -196,55 +196,108 @@ export class SessionStore {
     return [];
   }
 
+  /**
+   * Acquire a cross-process file lock during read-modify-write operations
+   * to avoid lost updates between concurrent ACP services or test workers.
+   */
+  withLock<T>(fn: () => T): T {
+    const lockPath = `${this.filePath}.lock`;
+    const dir = path.dirname(this.filePath);
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+    } catch {}
+
+    const maxLockAttempts = 30;
+    let acquiredFd: number | null = null;
+
+    for (let attempt = 1; attempt <= maxLockAttempts; attempt++) {
+      try {
+        acquiredFd = fs.openSync(lockPath, 'wx');
+        break;
+      } catch (err: any) {
+        if (err?.code === 'EEXIST') {
+          // Handle stale lock older than 8 seconds (e.g. process was SIGKILLed)
+          try {
+            const stat = fs.statSync(lockPath);
+            if (Date.now() - stat.mtimeMs > 8000) {
+              try {
+                fs.unlinkSync(lockPath);
+              } catch {}
+            }
+          } catch {}
+          sleepSync(10 * attempt + Math.floor(Math.random() * 15));
+          continue;
+        }
+        break;
+      }
+    }
+
+    try {
+      return fn();
+    } finally {
+      if (acquiredFd !== null) {
+        try {
+          fs.closeSync(acquiredFd);
+        } catch {}
+        try {
+          fs.unlinkSync(lockPath);
+        } catch {}
+      }
+    }
+  }
+
   /** Atomic write: temp file in same dir + rename with Windows retry backoff. */
   save(records: SessionRecord[]): void {
     const dir = path.dirname(this.filePath);
     fs.mkdirSync(dir, { recursive: true });
     const payload: SessionStoreFile = { version: 1, sessions: records };
-    const randSuffix = Math.random().toString(36).slice(2, 8);
-    const tmp = path.join(
-      dir,
-      `.${path.basename(this.filePath)}.${process.pid}.${Date.now()}.${randSuffix}.tmp`,
-    );
     const data = JSON.stringify(payload, null, 2) + '\n';
-    fs.writeFileSync(tmp, data, 'utf8');
 
-    const maxAttempts = 10;
+    const maxAttempts = 12;
     let lastError: unknown = null;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const randSuffix = Math.random().toString(36).slice(2, 8);
+      const tmp = path.join(
+        dir,
+        `.${path.basename(this.filePath)}.${process.pid}.${Date.now()}.${randSuffix}.tmp`,
+      );
+
       try {
-        fs.renameSync(tmp, this.filePath);
-        return;
-      } catch (err: any) {
-        lastError = err;
-        // On Windows: rename over existing may throw EPERM / EEXIST / EBUSY
+        fs.writeFileSync(tmp, data, 'utf8');
         try {
-          if (fs.existsSync(this.filePath)) {
-            fs.unlinkSync(this.filePath);
-          }
           fs.renameSync(tmp, this.filePath);
           return;
-        } catch (err2: any) {
-          lastError = err2 ?? err;
-          const code = (lastError as any)?.code;
-          if (
-            (code === 'EPERM' || code === 'EBUSY' || code === 'EACCES' || code === 'EEXIST') &&
-            attempt < maxAttempts
-          ) {
-            sleepSync(10 * attempt + Math.floor(Math.random() * 10));
-            continue;
+        } catch (renameErr: any) {
+          // On Windows: rename over existing may throw EPERM / EEXIST / EBUSY
+          try {
+            if (fs.existsSync(this.filePath)) {
+              fs.unlinkSync(this.filePath);
+            }
+            fs.renameSync(tmp, this.filePath);
+            return;
+          } catch (unlinkRenameErr: any) {
+            throw unlinkRenameErr ?? renameErr;
           }
+        }
+      } catch (err: any) {
+        lastError = err;
+        try {
+          if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
+        } catch {
+          /* ignore */
+        }
+        const code = (lastError as any)?.code;
+        if (
+          (code === 'EPERM' || code === 'EBUSY' || code === 'EACCES' || code === 'EEXIST') &&
+          attempt < maxAttempts
+        ) {
+          sleepSync(10 * attempt + Math.floor(Math.random() * 15));
+          continue;
         }
       }
     }
 
-    // Cleanup temp file on final failure
-    try {
-      if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
-    } catch {
-      /* ignore */
-    }
     throw lastError;
   }
 
@@ -252,14 +305,16 @@ export class SessionStore {
     if (!record?.sessionId || !record.cwd) {
       throw new Error('SessionRecord requires sessionId and cwd');
     }
-    const list = this.load();
-    const idx = list.findIndex((r) => r.sessionId === record.sessionId);
-    if (idx >= 0) {
-      list[idx] = { ...list[idx], ...record, sessionId: record.sessionId };
-    } else {
-      list.push(record);
-    }
-    this.save(list);
+    this.withLock(() => {
+      const list = this.load();
+      const idx = list.findIndex((r) => r.sessionId === record.sessionId);
+      if (idx >= 0) {
+        list[idx] = { ...list[idx], ...record, sessionId: record.sessionId };
+      } else {
+        list.push(record);
+      }
+      this.save(list);
+    });
   }
 
   get(sessionId: string): SessionRecord | undefined {
@@ -279,11 +334,13 @@ export class SessionStore {
 
   remove(sessionId: string): boolean {
     if (!sessionId) return false;
-    const list = this.load();
-    const next = list.filter((r) => r.sessionId !== sessionId);
-    if (next.length === list.length) return false;
-    this.save(next);
-    return true;
+    return this.withLock(() => {
+      const list = this.load();
+      const next = list.filter((r) => r.sessionId !== sessionId);
+      if (next.length === list.length) return false;
+      this.save(next);
+      return true;
+    });
   }
 }
 

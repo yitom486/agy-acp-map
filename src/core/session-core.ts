@@ -69,11 +69,15 @@ export class AgySessionCore {
     return this.catalogPromise;
   }
 
-  persistSession(session: SdkSession): void {
+  persistSession(session: SdkSession, opts?: { throwOnError?: boolean }): void {
+    if (session.deleted || !this.sessions.has(session.sessionId)) {
+      return;
+    }
     try {
       this.sessionStore.upsert(sessionToRecord(session));
     } catch (err) {
       console.warn(`[ACP-STORE] Warning: failed to persist session ${session?.sessionId}:`, err);
+      if (opts?.throwOnError) throw err;
     }
   }
 
@@ -190,15 +194,31 @@ export class AgySessionCore {
       throw new RequestError(-32602, 'sessionId is required for session/resume');
     }
 
-    if (params?.cwd !== undefined) {
-      if (typeof params.cwd !== 'string' || !path.isAbsolute(params.cwd)) {
-        throw new RequestError(-32602, 'cwd must be an absolute path');
+    const cwd = params?.cwd;
+    if (!cwd || typeof cwd !== 'string') {
+      throw new RequestError(-32602, 'cwd is required for session/resume');
+    }
+    if (!path.isAbsolute(cwd)) {
+      throw new RequestError(-32602, 'cwd must be an absolute path');
+    }
+    if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
+      throw new RequestError(-32602, `cwd does not exist or is not a directory: ${cwd}`);
+    }
+
+    if (params?.replayFrom !== undefined && params?.replayFrom !== null) {
+      throw new RequestError(-32602, 'session/resume with replayFrom is not supported by this agent');
+    }
+
+    if (params?.mcpServers !== undefined) {
+      if (!Array.isArray(params.mcpServers)) {
+        throw new RequestError(-32602, 'mcpServers must be an array');
       }
-      if (!fs.existsSync(params.cwd) || !fs.statSync(params.cwd).isDirectory()) {
-        throw new RequestError(-32602, `cwd does not exist or is not a directory: ${params.cwd}`);
+      if (params.mcpServers.length > 0) {
+        throw new RequestError(-32602, 'mcpServers are not supported by this agent');
       }
     }
 
+    let additionalDirectories: string[] = [];
     if (params?.additionalDirectories !== undefined) {
       if (!Array.isArray(params.additionalDirectories)) {
         throw new RequestError(-32602, 'additionalDirectories must be an array');
@@ -208,9 +228,7 @@ export class AgySessionCore {
           throw new RequestError(-32602, `additionalDirectory must be an absolute path: ${d}`);
         }
       }
-    }
-    if (params?.mcpServers !== undefined && !Array.isArray(params.mcpServers)) {
-      throw new RequestError(-32602, 'mcpServers must be an array');
+      additionalDirectories = params.additionalDirectories;
     }
 
     let session = this.sessions.get(sessionId);
@@ -229,10 +247,16 @@ export class AgySessionCore {
         );
       }
 
-      const cwd = record.cwd || params?.cwd || process.cwd();
+      if (record.cwd && path.resolve(record.cwd) !== path.resolve(cwd)) {
+        throw new RequestError(
+          -32602,
+          `cwd does not match session cwd: expected ${record.cwd}, got ${cwd}`,
+        );
+      }
+
       const richRoots = richRootsFromSession({
         cwd,
-        additionalDirectories: record.additionalDirectories,
+        additionalDirectories,
       });
       const mapper = createMapperState(richRoots);
       if (record.conversationId) {
@@ -242,7 +266,7 @@ export class AgySessionCore {
       session = {
         sessionId,
         cwd,
-        additionalDirectories: record.additionalDirectories,
+        additionalDirectories,
         createdAt: record.createdAt || new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         title: record.title,
@@ -276,14 +300,16 @@ export class AgySessionCore {
           `Session ${sessionId} was created with ACP v${session.protocolVersion} and cannot be resumed with v${protocolVersion}`,
         );
       }
-      session.updatedAt = new Date().toISOString();
-    }
 
-    if (params?.cwd) {
-      session.cwd = params.cwd;
-    }
-    if (params?.additionalDirectories) {
-      session.additionalDirectories = params.additionalDirectories;
+      if (path.resolve(session.cwd) !== path.resolve(cwd)) {
+        throw new RequestError(
+          -32602,
+          `cwd does not match session cwd: expected ${session.cwd}, got ${cwd}`,
+        );
+      }
+
+      session.additionalDirectories = additionalDirectories;
+      session.updatedAt = new Date().toISOString();
     }
 
     const discovery = await this.getDiscovery();
@@ -368,6 +394,11 @@ export class AgySessionCore {
 
   async listSessions(params?: any): Promise<{ sessions: any[]; nextCursor?: string | null }> {
     const filterCwd = params?.cwd;
+    if (filterCwd !== undefined && filterCwd !== null) {
+      if (typeof filterCwd !== 'string' || !path.isAbsolute(filterCwd)) {
+        throw new RequestError(-32602, 'cwd must be an absolute path');
+      }
+    }
     const disk = this.sessionStore.list(filterCwd);
     const diskById = new Map(disk.map((r) => [r.sessionId, r]));
 
@@ -406,9 +437,9 @@ export class AgySessionCore {
       return a.sessionId.localeCompare(b.sessionId);
     });
 
-    // Pagination support per ACP v1/v2 schema with opaque cursor
+    // Keyset pagination support per ACP v1/v2 schema with opaque cursor
     const cursor = params?.cursor;
-    let offset = 0;
+    let startIndex = 0;
     if (cursor !== undefined && cursor !== null && cursor !== '') {
       if (typeof cursor !== 'string') {
         throw new RequestError(-32602, 'cursor must be a string');
@@ -416,31 +447,42 @@ export class AgySessionCore {
       try {
         const decoded = Buffer.from(cursor, 'base64url').toString('utf8');
         const parsed = JSON.parse(decoded);
-        if (
-          typeof parsed?.offset !== 'number' ||
-          !Number.isInteger(parsed.offset) ||
-          parsed.offset < 0
+        if (parsed && typeof parsed.u === 'string' && typeof parsed.s === 'string') {
+          const cursorTime = new Date(parsed.u).getTime();
+          const cursorId = parsed.s;
+          const foundIdx = allSessions.findIndex((s) => {
+            const sTime = s.updatedAt ? new Date(s.updatedAt).getTime() : 0;
+            if (sTime < cursorTime) return true;
+            if (sTime === cursorTime && s.sessionId.localeCompare(cursorId) > 0) return true;
+            return false;
+          });
+          startIndex = foundIdx >= 0 ? foundIdx : allSessions.length;
+        } else if (
+          typeof parsed?.offset === 'number' &&
+          Number.isInteger(parsed.offset) &&
+          parsed.offset >= 0
         ) {
-          throw new Error('invalid offset payload');
-        }
-        offset = parsed.offset;
-      } catch {
-        if (/^\d+$/.test(cursor)) {
-          offset = parseInt(cursor, 10);
+          startIndex = parsed.offset;
         } else {
-          throw new RequestError(-32602, `Invalid cursor token: ${cursor}`);
+          throw new Error('invalid cursor structure');
         }
+      } catch {
+        throw new RequestError(-32602, `Invalid cursor token: ${cursor}`);
       }
     }
 
     const limit = 50;
-    const paged = allSessions.slice(offset, offset + limit);
-    const hasMore = offset + limit < allSessions.length;
-    const nextCursor = hasMore
-      ? Buffer.from(JSON.stringify({ offset: offset + limit })).toString('base64url')
-      : null;
+    const paged = allSessions.slice(startIndex, startIndex + limit);
+    const hasMore = startIndex + limit < allSessions.length;
+    let nextCursor: string | undefined;
+    if (hasMore && paged.length > 0) {
+      const last = paged[paged.length - 1];
+      nextCursor = Buffer.from(
+        JSON.stringify({ u: last.updatedAt, s: last.sessionId }),
+      ).toString('base64url');
+    }
 
-    return { sessions: paged, nextCursor };
+    return nextCursor ? { sessions: paged, nextCursor } : { sessions: paged };
   }
 
   async deleteSession(params: any): Promise<{}> {
@@ -451,6 +493,9 @@ export class AgySessionCore {
 
     const session = this.sessions.get(sessionId);
     if (session) {
+      session.deleted = true;
+      session.cancelled = true;
+      this.sessions.delete(sessionId);
       try {
         await session.proc.kill();
       } catch {
@@ -458,7 +503,6 @@ export class AgySessionCore {
       }
       cleanupSessionStaging(session.cwd, { sessionId, keep: false });
       session.stagedFiles = [];
-      this.sessions.delete(sessionId);
     } else {
       const record = this.sessionStore.get(sessionId);
       if (record?.cwd) {
@@ -570,6 +614,11 @@ export class AgySessionCore {
         console.error(`[ACP-SDK] finish: ending turn for sid: ${sessionId} with stopReason: ${stopReason}`);
 
         queue.enqueue(async () => {
+          if (session.deleted || !this.sessions.has(sessionId)) {
+            resolve({ stopReason });
+            return;
+          }
+
           // Check if soft-deny happened and emit note
           if (!session.softDenyEmitted && session.softDenies.length) {
             session.softDenyEmitted = true;
@@ -600,7 +649,9 @@ export class AgySessionCore {
       };
 
       const onEvent = (event: any) => {
+        if (session.deleted || !this.sessions.has(sessionId)) return;
         queue.enqueue(async () => {
+          if (session.deleted || !this.sessions.has(sessionId)) return;
           const fromEvt = parseSoftDenyFromEvent(event);
           if (fromEvt.length) {
             session.softDenies = mergeSoftDenies(session.softDenies, fromEvt);
@@ -629,6 +680,7 @@ export class AgySessionCore {
       const onError = (err: Error) => {
         console.error(`[ACP-SDK] onError (sid: ${sessionId}):`, err.message);
         queue.enqueue(async () => {
+          if (session.deleted || !this.sessions.has(sessionId)) return;
           await notifyClient({
             sessionUpdate: 'agent_message_chunk',
             messageId: `msg_agent_err_${Date.now()}`,
@@ -639,6 +691,7 @@ export class AgySessionCore {
       };
 
       const onStderr = (line: string) => {
+        if (session.deleted || !this.sessions.has(sessionId)) return;
         session.stderrBuf += line + '\n';
         const parsed = parseSoftDeny(line);
         if (parsed.length) {
@@ -648,6 +701,7 @@ export class AgySessionCore {
 
       const onExit = (code: number | null) => {
         console.error(`[ACP-SDK] onExit (sid: ${sessionId}): code: ${code}`);
+        if (session.deleted || !this.sessions.has(sessionId)) return;
         if (session.busy && !isSettled) {
           finish(session.cancelled ? 'cancelled' : 'end_turn');
         }

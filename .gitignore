@@ -7,3 +7,4 @@ smoke-workdir-*/
 .env.*
 dist/
 .cache/
+scratch/
