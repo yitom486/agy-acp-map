@@ -307,7 +307,9 @@ Engineering feasibility ≠ legal permission. 即便只用官方 CLI I/O，仍�
 ## Windows Black Box & Process Supervision / Windows 无黑框配置
 
 - **Process Supervision**: The bridge spawns all child processes (and executes process tree cleanup via `taskkill /T /F`) using `windowsHide: true`.
+- **Native Windows launcher**: `dist/agy-headless.exe` is a GUI-subsystem wrapper that starts console children with `CREATE_NO_WINDOW` and forwards stdio. Real `agy.exe` sessions, discovery probes, and `taskkill` are routed through it when it is present.
 - **Zed / Editor Configuration**: When configuring the bridge in Zed on Windows, point directly to `bun` or `node` with `dist/bin.js` (or a windowless shim) rather than a `.cmd` or `.bat` wrapper. Batch scripts cause `cmd.exe` to flash a console window on launch before passing control to Node/Bun.
+- **If a custom Zed server still flashes**: use the native wrapper as the custom command itself, for example `command: "<repo>\\dist\\agy-headless.exe"` with args `["<path-to-bun-or-node>", "<repo>\\src\\sdk-server.ts"]` (or `dist\\bin.js`). You can also set `AGY_HEADLESS_LAUNCHER` to an absolute wrapper path. Packaging the bridge on npm improves distribution, but npm packaging alone does not change Windows process creation flags.
 
 ## Bun + TypeScript / Windows
 

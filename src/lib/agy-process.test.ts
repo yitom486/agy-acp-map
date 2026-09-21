@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import {
@@ -7,6 +8,8 @@ import {
   forceKill,
   waitForExit,
   DEFAULT_GRACE_MS,
+  resolveAgyLaunchTarget,
+  resolveHeadlessTarget,
 } from './agy-process.ts';
 
 describe('AgyProcessManager generation', () => {
@@ -88,6 +91,27 @@ describe('AgyProcessManager generation', () => {
   test('writeLine throws when not writable', () => {
     const mgr = new AgyProcessManager();
     expect(() => mgr.writeLine('hi')).toThrow();
+  });
+
+  test('routes agy and short-lived Windows helpers through the native headless launcher', () => {
+    const launcherPath = path.resolve(import.meta.dir, '../../dist/agy-headless.exe');
+    const launcherAvailable = process.platform === 'win32' && fs.existsSync(launcherPath);
+    const launcherDisabled = process.env.AGY_DISABLE_HEADLESS_LAUNCHER === '1';
+    const expectedHeadless = launcherAvailable && !launcherDisabled;
+
+    const agyTarget = resolveAgyLaunchTarget('C:\\Users\\test\\.gemini\\bin\\agy.exe', ['models']);
+    expect(agyTarget.headless).toBe(expectedHeadless);
+    if (expectedHeadless) {
+      expect(path.resolve(agyTarget.bin)).toBe(path.resolve(launcherPath));
+      expect(agyTarget.args[0]).toBe('C:\\Users\\test\\.gemini\\bin\\agy.exe');
+    }
+
+    const helperTarget = resolveHeadlessTarget('taskkill', ['/pid', '123', '/T', '/F']);
+    expect(helperTarget.headless).toBe(expectedHeadless);
+    if (expectedHeadless) {
+      expect(path.resolve(helperTarget.bin)).toBe(path.resolve(launcherPath));
+      expect(helperTarget.args[0]).toBe('taskkill');
+    }
   });
 
   test('setCallbacks dynamically routes subsequent turns to new event callbacks on the same live child process', async () => {

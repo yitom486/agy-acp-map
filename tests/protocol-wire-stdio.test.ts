@@ -205,11 +205,16 @@ describe('Wire-level Stdio JSON-RPC Integration (Full sdk-server Process)', () =
   );
 
   test(
-    'V1 Wire History: session/load replays the JSONL display journal after reconnect',
+    'V1 Wire History: persists agy NDJSON, reloads across ACP process restart, and continues with --conversation',
     async () => {
+      const launchLog = path.join(testRootWire, 'mock-agy-launches.jsonl');
       const first = createSmokeHarness({
         tag: 'v1-history-create',
-        env: { AGY_BIN: mockCliPath, NODE_ENV: 'test' },
+        env: {
+          AGY_BIN: mockCliPath,
+          NODE_ENV: 'test',
+          MOCK_AGY_LAUNCH_LOG: launchLog,
+        },
       });
       activeHarness = first;
 
@@ -226,12 +231,36 @@ describe('Wire-level Stdio JSON-RPC Integration (Full sdk-server Process)', () =
       await first.waitIdle(15000, sessionId);
       await promptPromise;
       await first.send('session/close', { sessionId });
+
+      // Inspect the actual durable artifacts before simulating a server restart.
+      const storeFile = JSON.parse(fs.readFileSync(testStoreWire, 'utf8'));
+      const storedSession = storeFile.sessions.find((item: any) => item.sessionId === sessionId);
+      expect(storedSession).toBeDefined();
+      expect(storedSession.conversationId).toBe('mock-conv-blackbox');
+      expect(storedSession.protocolVersion).toBe(1);
+
+      const resolvedHistoryFile = path.join(testHistoryWire, `${encodeURIComponent(sessionId)}.jsonl`);
+      expect(fs.existsSync(resolvedHistoryFile)).toBe(true);
+      const persistedHistory = fs
+        .readFileSync(resolvedHistoryFile, 'utf8')
+        .trim()
+        .split(/\r?\n/)
+        .map((line) => JSON.parse(line));
+      expect(persistedHistory.map((record) => record.role)).toEqual(['user', 'assistant']);
+      expect(persistedHistory[0].sessionId).toBe(sessionId);
+      expect(persistedHistory[1].text).toContain('File read complete with success.');
+      expect(fs.readFileSync(resolvedHistoryFile, 'utf8')).not.toContain('package.json');
+
       first.kill('SIGKILL');
       activeHarness = null;
 
       const second = createSmokeHarness({
         tag: 'v1-history-load',
-        env: { AGY_BIN: mockCliPath, NODE_ENV: 'test' },
+        env: {
+          AGY_BIN: mockCliPath,
+          NODE_ENV: 'test',
+          MOCK_AGY_LAUNCH_LOG: launchLog,
+        },
       });
       activeHarness = second;
       await second.send('initialize', {
@@ -239,6 +268,9 @@ describe('Wire-level Stdio JSON-RPC Integration (Full sdk-server Process)', () =
         capabilities: {},
         info: { name: 'history-client', version: '0.1.0' },
       });
+
+      const listed = await second.send('session/list', { cwd: repoRoot });
+      expect(listed.sessions.some((item: any) => item.sessionId === sessionId)).toBe(true);
 
       const loaded = await second.send('session/load', {
         sessionId,
@@ -257,6 +289,38 @@ describe('Wire-level Stdio JSON-RPC Integration (Full sdk-server Process)', () =
       ]);
       expect(replayed[1].content.text).toContain('File read complete with success.');
       expect(JSON.stringify(replayed)).not.toContain('package.json');
+
+      // Loading history itself must not launch agy. The next prompt must,
+      // however, launch a fresh mock process with the persisted conversation id.
+      const continuation = second.send('session/prompt', {
+        sessionId,
+        prompt: [{ type: 'text', text: 'Continue after reload' }],
+      });
+      await second.waitIdle(15000, sessionId);
+      const continuationResult = await continuation;
+      expect(continuationResult.stopReason).toBe('end_turn');
+
+      const launches = fs
+        .readFileSync(launchLog, 'utf8')
+        .trim()
+        .split(/\r?\n/)
+        .map((line) => JSON.parse(line));
+      // A script mock also services the optional catalog probes (`models` and
+      // `agents`) during each server initialization. They are separate short-
+      // lived processes, not conversation workers, so assert the resume handoff
+      // against only the stream-json worker launches.
+      const workerLaunches = launches.filter(
+        (launch) => !launch.argv.includes('models') && !launch.argv.includes('agents'),
+      );
+      expect(workerLaunches).toHaveLength(2);
+      expect(workerLaunches[0].argv).not.toContain('--conversation');
+      const conversationIndex = workerLaunches[1].argv.indexOf('--conversation');
+      expect(conversationIndex).toBeGreaterThanOrEqual(0);
+      expect(workerLaunches[1].argv[conversationIndex + 1]).toBe('mock-conv-blackbox');
+
+      const historyAfterContinuation = fs.readFileSync(resolvedHistoryFile, 'utf8');
+      expect(historyAfterContinuation).not.toContain('package.json');
+      expect(historyAfterContinuation).toContain('Continue after reload');
 
       await second.send('session/delete', { sessionId });
     },

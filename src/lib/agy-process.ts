@@ -50,13 +50,13 @@ export function resolveAgyLaunchTarget(bin: string, args: string[]): AgyLaunchTa
   }
 
   if (process.env.AGY_DISABLE_HEADLESS_LAUNCHER === '1') {
-    console.warn('[ACP-PROC] Windows headless agy launcher disabled by AGY_DISABLE_HEADLESS_LAUNCHER=1');
+    warnOnce('[ACP-PROC] Windows headless agy launcher disabled by AGY_DISABLE_HEADLESS_LAUNCHER=1');
     return { bin, args, headless: false };
   }
 
   const launcher = findHeadlessLauncher();
   if (!launcher) {
-    console.warn(
+    warnOnce(
       '[ACP-PROC] Native Windows headless launcher was not found; spawning agy.exe directly. ' +
         'Run "bun run build:headless" or set AGY_HEADLESS_LAUNCHER.',
     );
@@ -68,6 +68,46 @@ export function resolveAgyLaunchTarget(bin: string, args: string[]): AgyLaunchTa
     args: [bin, ...args],
     headless: true,
   };
+}
+
+/**
+ * Generic variant: route ANY Windows console binary through the native
+ * headless launcher (CREATE_NO_WINDOW + stdio passthrough). Used for
+ * short-lived helpers (discovery, taskkill) that otherwise bypass the
+ * agy-specific resolver above. Returns the input unchanged off-Windows,
+ * when disabled, when the launcher is missing, or when the target already
+ * IS the launcher (recursion guard).
+ */
+export function resolveHeadlessTarget(bin: string, args: string[]): AgyLaunchTarget {
+  if (process.platform !== 'win32') {
+    return { bin, args, headless: false };
+  }
+  if (process.env.AGY_DISABLE_HEADLESS_LAUNCHER === '1') {
+    return { bin, args, headless: false };
+  }
+  const launcher = findHeadlessLauncher();
+  if (!launcher) {
+    return { bin, args, headless: false };
+  }
+  try {
+    if (path.resolve(bin) === path.resolve(launcher)) {
+      return { bin, args, headless: true };
+    }
+  } catch {
+    // fall through to wrapping
+  }
+  return {
+    bin: launcher,
+    args: [bin, ...args],
+    headless: true,
+  };
+}
+
+let warnedOnce = false;
+function warnOnce(message: string): void {
+  if (warnedOnce) return;
+  warnedOnce = true;
+  console.warn(message);
 }
 
 function isAgyExecutable(bin: string): boolean {

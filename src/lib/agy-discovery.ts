@@ -5,6 +5,7 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
+import { resolveHeadlessTarget } from './agy-process';
 
 export interface DiscoveryResult {
   availableModels: string[];
@@ -86,7 +87,8 @@ function forceKill(child: any): void {
   if (!child || child.exitCode != null || child.signalCode != null) return;
   if (process.platform === 'win32' && typeof child.pid === 'number') {
     try {
-      spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], {
+      const target = resolveHeadlessTarget('taskkill', ['/pid', String(child.pid), '/T', '/F']);
+      spawn(target.bin, target.args, {
         stdio: 'ignore',
         windowsHide: true,
       });
@@ -136,7 +138,10 @@ function runAgySubcommand(
         execBin = process.execPath;
         execArgs = [bin, ...args];
       }
-      child = spawn(execBin, execArgs, {
+      // Route even short-lived probes through the native headless launcher
+      // on Windows: windowsHide alone still flashes under some runtimes.
+      const target = resolveHeadlessTarget(execBin, execArgs);
+      child = spawn(target.bin, target.args, {
         stdio: ['ignore', 'pipe', 'pipe'],
         env: { ...process.env },
         windowsHide: true,

@@ -1,7 +1,26 @@
 const readline = require('readline');
+const fs = require('fs');
 
 // Check CLI subcommands (models, agents, --version, etc.)
 const args = process.argv.slice(2);
+const launchLog = process.env.MOCK_AGY_LAUNCH_LOG;
+if (launchLog) {
+  fs.mkdirSync(require('path').dirname(launchLog), { recursive: true });
+  fs.appendFileSync(
+    launchLog,
+    JSON.stringify({
+      pid: process.pid,
+      argv: args,
+      cwd: process.cwd(),
+    }) + '\n',
+  );
+}
+
+const conversationArgIndex = args.indexOf('--conversation');
+const launchConversationId =
+  conversationArgIndex >= 0 && typeof args[conversationArgIndex + 1] === 'string'
+    ? args[conversationArgIndex + 1]
+    : 'mock-conv-blackbox';
 if (args.includes('models')) {
   console.log('gemini-3.8-flash-high\tGemini 3.8 Flash High (Fast)');
   console.log('gemini-3.8-pro\tGemini 3.8 Pro (Reasoning)');
@@ -43,7 +62,9 @@ rl.on('line', (line) => {
     if (data.event === 'user') {
       turn++;
       const userText = data.message?.content?.[0]?.text || '';
-      const convId = 'mock-conv-blackbox';
+      // The real agy CLI returns the conversation id it was launched with.
+      // This makes resume tests verify the actual --conversation handoff.
+      const convId = launchConversationId;
 
       // 1. Scenario: Bad / Junk lines resilience
       if (userText.includes('[test:bad_lines]')) {
