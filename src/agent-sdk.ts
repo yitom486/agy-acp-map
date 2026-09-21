@@ -36,7 +36,7 @@ import {
   resolvePrintTimeout,
   SAFETY_TIERS,
 } from './lib/agy-args.ts';
-import { discoverAgyCatalog } from './lib/agy-discovery.ts';
+import { discoverAgyCatalog, type DiscoveryResult } from './lib/agy-discovery.ts';
 import { AgyProcessManager } from './lib/agy-process.ts';
 import {
   SessionStore,
@@ -69,6 +69,79 @@ export const BRIDGE_CAPABILITIES = {
   clientTerminal: false,
 };
 
+type ProtocolVersion = 1 | 2;
+type ProtocolConfigOption = v1.SessionConfigOption | v2.SessionConfigOption;
+
+const V1_AGENT_CAPABILITIES = {
+  loadSession: true,
+  sessionCapabilities: {
+    list: {},
+    resume: {},
+    close: {},
+    additionalDirectories: {},
+  },
+};
+
+const V2_AGENT_CAPABILITIES = {
+  session: {
+    additionalDirectories: {},
+  },
+};
+
+type CatalogChoice = {
+  value: string;
+  name: string;
+  description?: string;
+};
+
+function catalogChoices(items: unknown, currentValue?: string): CatalogChoice[] {
+  const choices: CatalogChoice[] = [];
+  const seen = new Set<string>();
+
+  if (Array.isArray(items)) {
+    for (const item of items) {
+      let value: string | undefined;
+      let name: string | undefined;
+      let description: string | undefined;
+
+      if (typeof item === 'string') {
+        value = item.trim();
+        name = value;
+      } else if (item && typeof item === 'object') {
+        const candidate = item as Record<string, unknown>;
+        value =
+          typeof candidate.id === 'string'
+            ? candidate.id.trim()
+            : typeof candidate.value === 'string'
+              ? candidate.value.trim()
+              : undefined;
+        name = typeof candidate.name === 'string' ? candidate.name.trim() : value;
+        description =
+          typeof candidate.description === 'string' && candidate.description.trim()
+            ? candidate.description.trim()
+            : undefined;
+      }
+
+      if (!value || seen.has(value)) continue;
+      seen.add(value);
+      choices.push({ value, name: name || value, ...(description ? { description } : {}) });
+    }
+  }
+
+  // A resumed session may contain a model/agent that the current CLI catalog
+  // no longer reports. Keep that value selectable so the session response
+  // remains internally consistent and does not lose the user's selection.
+  if (currentValue && !seen.has(currentValue)) {
+    choices.unshift({
+      value: currentValue,
+      name: currentValue,
+      description: 'Current session value',
+    });
+  }
+
+  return choices;
+}
+
 export interface SdkSession {
   sessionId: string;
   cwd: string;
@@ -80,7 +153,7 @@ export interface SdkSession {
   mapper: MapperState;
   busy: boolean;
   cancelled: boolean;
-  protocolVersion: number;
+  protocolVersion: ProtocolVersion;
   stderrBuf: string;
   softDenies: SoftDenyInfo[];
   softDenyEmitted: boolean;
@@ -123,7 +196,7 @@ export class AgyAcpService {
   private catalogPromise: Promise<any> | null = null;
 
   constructor() {
-    this.catalogPromise = discoverAgyCatalog();
+    // Discovery is lazy to avoid spawning background subprocesses on instantiation
   }
 
   private persistSession(session: SdkSession) {
@@ -151,52 +224,81 @@ export class AgyAcpService {
     return Object.keys(meta).length ? meta : undefined;
   }
 
-  private buildConfigOptions(discovery: any) {
-    const models = discovery.availableModels || [];
-    const agents = discovery.availableAgents || [];
-    return [
-      ...(models.length
-        ? [
-            {
-              id: 'model',
-              name: 'Model',
-              description: 'Google Antigravity model ID',
-              category: 'model',
-              options: models.map((m: any) => ({
-                value: typeof m === 'string' ? m : m.id,
-                name: typeof m === 'string' ? m : m.name || m.id,
-                description: typeof m === 'string' ? undefined : m.description,
-              })),
-            },
-          ]
-        : []),
-      ...(agents.length
-        ? [
-            {
-              id: 'agent',
-              name: 'Agent preset',
-              description: 'Specialized agent preset',
-              category: 'agent',
-              options: agents.map((a: any) => ({
-                value: typeof a === 'string' ? a : a.id,
-                name: typeof a === 'string' ? a : a.name || a.id,
-                description: typeof a === 'string' ? undefined : a.description,
-              })),
-            },
-          ]
-        : []),
-    ];
+  private async getDiscovery(): Promise<DiscoveryResult> {
+    if (!this.catalogPromise) {
+      this.catalogPromise = discoverAgyCatalog();
+    }
+    return this.catalogPromise;
+  }
+
+  private applyCatalogDefaults(session: SdkSession, discovery: DiscoveryResult): void {
+    const models = catalogChoices(discovery.availableModels, session.model);
+    const agents = catalogChoices(discovery.availableAgents, session.agent);
+
+    if (!session.model && models.length) session.model = models[0].value;
+    if (!session.agent && agents.length) session.agent = agents[0].value;
+  }
+
+  /**
+   * Build the standard ACP session configuration shape.
+   *
+   * ACP v1 calls the selector key `id`; ACP v2 calls it `configId`.
+   * Keeping this difference at the protocol boundary lets the core session
+   * state remain version-neutral while both wire protocols stay conformant.
+   */
+  private buildConfigOptions(
+    discovery: DiscoveryResult,
+    session?: Pick<SdkSession, 'model' | 'agent'>,
+    protocolVersion: ProtocolVersion = 2,
+  ): ProtocolConfigOption[] {
+    const models = catalogChoices(discovery.availableModels, session?.model);
+    const agents = catalogChoices(discovery.availableAgents, session?.agent);
+    const options: ProtocolConfigOption[] = [];
+
+    if (models.length) {
+      const select = {
+        type: 'select' as const,
+        name: 'Model',
+        description: 'Google Antigravity model ID',
+        category: 'model',
+        currentValue: session?.model || models[0].value,
+        options: models,
+      };
+      options.push(
+        (protocolVersion === 1
+          ? { ...select, id: 'model' }
+          : { ...select, configId: 'model' }) as ProtocolConfigOption,
+      );
+    }
+
+    if (agents.length) {
+      const select = {
+        type: 'select' as const,
+        name: 'Agent preset',
+        description: 'Specialized agent preset',
+        // `agent` is not a reserved ACP category, so use the extension
+        // namespace instead of claiming a future standard category.
+        category: '_agent',
+        currentValue: session?.agent || agents[0].value,
+        options: agents,
+      };
+      options.push(
+        (protocolVersion === 1
+          ? { ...select, id: 'agent' }
+          : { ...select, configId: 'agent' }) as ProtocolConfigOption,
+      );
+    }
+
+    return options;
   }
 
   async initialize() {
-    const discovery = await (this.catalogPromise || discoverAgyCatalog());
+    const discovery = await this.getDiscovery();
     const configOptions = this.buildConfigOptions(discovery);
 
     return {
       agentInfo: AGENT_INFO,
       info: AGENT_INFO,
-      capabilities: { session: { loadSession: true } },
-      agentCapabilities: { loadSession: true },
       availableModels: discovery.availableModels,
       availableAgents: discovery.availableAgents,
       bridgeCapabilities: {
@@ -206,11 +308,35 @@ export class AgyAcpService {
         configOptions,
       },
       _meta: {
-        bridgeCapabilities: BRIDGE_CAPABILITIES,
+        bridgeCapabilities: {
+          ...BRIDGE_CAPABILITIES,
+          availableModels: discovery.availableModels,
+          availableAgents: discovery.availableAgents,
+          configOptions,
+        },
         availableModels: discovery.availableModels,
         availableAgents: discovery.availableAgents,
-        configOptions,
       },
+    };
+  }
+
+  async initializeV1() {
+    const init = await this.initialize();
+    return {
+      protocolVersion: 1,
+      agentInfo: init.agentInfo,
+      agentCapabilities: V1_AGENT_CAPABILITIES,
+      _meta: init._meta,
+    };
+  }
+
+  async initializeV2() {
+    const init = await this.initialize();
+    return {
+      protocolVersion: 2,
+      info: init.info,
+      capabilities: V2_AGENT_CAPABILITIES,
+      _meta: init._meta,
     };
   }
 
@@ -220,7 +346,9 @@ export class AgyAcpService {
       throw new RequestError(-32602, 'cwd must be an absolute path');
     }
 
+    const protocolVersion: ProtocolVersion = params?.protocolVersion === 1 ? 1 : 2;
     const launch = extractLaunchConfig(params);
+    const discovery = await this.getDiscovery();
     const sessionId = randomUUID();
     const now = new Date().toISOString();
     const richRoots = richRootsFromSession({
@@ -243,7 +371,7 @@ export class AgyAcpService {
       mapper,
       busy: false,
       cancelled: false,
-      protocolVersion: params?.protocolVersion || 2,
+      protocolVersion,
       stderrBuf: '',
       softDenies: [],
       softDenyEmitted: false,
@@ -261,12 +389,14 @@ export class AgyAcpService {
       printTimeout: launch.printTimeout,
     };
 
+    this.applyCatalogDefaults(session, discovery);
     this.sessions.set(sessionId, session);
     this.persistSession(session);
 
     const meta = this.sessionMeta(session);
     return {
       sessionId,
+      configOptions: this.buildConfigOptions(discovery, session, protocolVersion),
       ...(meta ? { _meta: meta } : {}),
     };
   }
@@ -277,6 +407,7 @@ export class AgyAcpService {
       throw new RequestError(-32602, 'sessionId is required for session/resume');
     }
 
+    const requestedProtocolVersion: ProtocolVersion = params?.protocolVersion === 1 ? 1 : 2;
     let session = this.sessions.get(sessionId);
     if (!session) {
       const record = this.sessionStore.get(sessionId);
@@ -305,7 +436,7 @@ export class AgyAcpService {
         mapper,
         busy: false,
         cancelled: false,
-        protocolVersion: params?.protocolVersion || 2,
+        protocolVersion: requestedProtocolVersion,
         stderrBuf: '',
         softDenies: [],
         softDenyEmitted: false,
@@ -325,12 +456,17 @@ export class AgyAcpService {
 
       this.sessions.set(sessionId, session);
     } else {
+      session.protocolVersion = requestedProtocolVersion;
       session.updatedAt = new Date().toISOString();
     }
 
+    const discovery = await this.getDiscovery();
+    this.applyCatalogDefaults(session, discovery);
+    this.persistSession(session);
+
     const meta = this.sessionMeta(session);
     return {
-      sessionId,
+      configOptions: this.buildConfigOptions(discovery, session, session.protocolVersion),
       ...(meta ? { _meta: meta } : {}),
     };
   }
@@ -338,7 +474,11 @@ export class AgyAcpService {
   async setConfigOption(params: any) {
     const sessionId = params?.sessionId;
     const configId = params?.configId || params?.id;
-    const value = params?.value;
+    const rawValue = params?.value;
+    const value =
+      rawValue && typeof rawValue === 'object' && 'value' in rawValue
+        ? (rawValue as { value: unknown }).value
+        : rawValue;
 
     if (!sessionId) {
       throw new RequestError(-32602, 'sessionId is required');
@@ -348,20 +488,42 @@ export class AgyAcpService {
       throw new RequestError(-32001, `unknown sessionId: ${sessionId}`);
     }
 
-    if (configId && value !== undefined) {
-      applyConfigOption(session as any, configId, value);
-      session.updatedAt = new Date().toISOString();
-      this.persistSession(session);
-      await session.proc.kill();
+    if (typeof configId !== 'string' || value === undefined) {
+      throw new RequestError(-32602, 'configId and value are required');
     }
 
-    const discovery = await (this.catalogPromise || discoverAgyCatalog());
-    const configOptions = this.buildConfigOptions(discovery);
+    const protocolVersion: ProtocolVersion =
+      params?.protocolVersion === 1 || session.protocolVersion === 1 ? 1 : 2;
+    const discovery = await this.getDiscovery();
+    this.applyCatalogDefaults(session, discovery);
+    const before = this.buildConfigOptions(discovery, session, protocolVersion);
+    const selected = before.find((option) => {
+      const candidate = option as any;
+      return candidate.configId === configId || candidate.id === configId;
+    }) as any;
+    if (!selected) {
+      throw new RequestError(-32602, `unsupported configId: ${configId}`);
+    }
+
+    const allowedValues = Array.isArray(selected.options)
+      ? selected.options.map((option: any) => option.value)
+      : [];
+    if (!allowedValues.includes(value)) {
+      throw new RequestError(-32602, `invalid value for configId: ${configId}`);
+    }
+
+    const applied = applyConfigOption(session as any, configId, value);
+    if (!applied.ok) {
+      throw new RequestError(-32602, applied.error || `unsupported configId: ${configId}`);
+    }
+
+    session.updatedAt = new Date().toISOString();
+    this.persistSession(session);
+    await session.proc.kill();
+
+    const configOptions = this.buildConfigOptions(discovery, session, protocolVersion);
 
     return {
-      sessionId,
-      configId,
-      value,
       configOptions,
       _meta: this.sessionMeta(session),
     };
@@ -678,17 +840,19 @@ export class AgyAcpService {
 export function createAcpV1App(service: AgyAcpService = new AgyAcpService()): v1.AgentApp {
   return v1
     .agent({ name: AGENT_INFO.name })
-    .onRequest(v1.methods.agent.initialize, async () => {
-      const init = await service.initialize();
-      return {
-        protocolVersion: 1,
-        ...init,
-      } as any;
-    })
-    .onRequest(v1.methods.agent.session.new, (ctx) => service.newSession(ctx.params))
-    .onRequest(v1.methods.agent.session.load, (ctx) => service.resumeSession(ctx.params))
-    .onRequest(v1.methods.agent.session.resume, (ctx) => service.resumeSession(ctx.params))
-    .onRequest(v1.methods.agent.session.setConfigOption, (ctx) => service.setConfigOption(ctx.params) as any)
+    .onRequest(v1.methods.agent.initialize, () => service.initializeV1() as any)
+    .onRequest(v1.methods.agent.session.new, (ctx) =>
+      service.newSession({ ...ctx.params, protocolVersion: 1 }) as any,
+    )
+    .onRequest(v1.methods.agent.session.load, (ctx) =>
+      service.resumeSession({ ...ctx.params, protocolVersion: 1 }) as any,
+    )
+    .onRequest(v1.methods.agent.session.resume, (ctx) =>
+      service.resumeSession({ ...ctx.params, protocolVersion: 1 }) as any,
+    )
+    .onRequest(v1.methods.agent.session.setConfigOption, (ctx) =>
+      service.setConfigOption({ ...ctx.params, protocolVersion: 1 }) as any,
+    )
     .onRequest(v1.methods.agent.session.list, (ctx) => service.listSessions(ctx.params))
     .onRequest(v1.methods.agent.session.close, (ctx) => service.closeSession(ctx.params))
     .onRequest(v1.methods.agent.session.prompt, async (ctx: any) => {
@@ -708,16 +872,16 @@ export function createAcpV1App(service: AgyAcpService = new AgyAcpService()): v1
 export function createAcpV2App(service: AgyAcpService = new AgyAcpService()): v2.AgentApp {
   return v2
     .agent({ name: AGENT_INFO.name })
-    .onRequest(v2.methods.agent.initialize, async () => {
-      const init = await service.initialize();
-      return {
-        protocolVersion: 2,
-        ...init,
-      } as any;
-    })
-    .onRequest(v2.methods.agent.session.new, (ctx) => service.newSession(ctx.params))
-    .onRequest(v2.methods.agent.session.resume, (ctx) => service.resumeSession(ctx.params))
-    .onRequest(v2.methods.agent.session.setConfigOption, (ctx) => service.setConfigOption(ctx.params) as any)
+    .onRequest(v2.methods.agent.initialize, () => service.initializeV2() as any)
+    .onRequest(v2.methods.agent.session.new, (ctx) =>
+      service.newSession({ ...ctx.params, protocolVersion: 2 }) as any,
+    )
+    .onRequest(v2.methods.agent.session.resume, (ctx) =>
+      service.resumeSession({ ...ctx.params, protocolVersion: 2 }) as any,
+    )
+    .onRequest(v2.methods.agent.session.setConfigOption, (ctx) =>
+      service.setConfigOption({ ...ctx.params, protocolVersion: 2 }) as any,
+    )
     .onRequest(v2.methods.agent.session.list, (ctx) => service.listSessions(ctx.params))
     .onRequest(v2.methods.agent.session.close, (ctx) => service.closeSession(ctx.params))
     .onRequest(v2.methods.agent.session.prompt, async (ctx: any) => {

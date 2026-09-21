@@ -15,16 +15,27 @@ describe('AgyAcpService & SDK Agent', () => {
     clearDiscoveryCache();
   });
 
-  test('initialize returns expected capabilities and agentInfo', async () => {
+  test('initialize returns catalog metadata without leaking non-standard protocol fields', async () => {
     const service = new AgyAcpService();
     const res = await service.initialize();
     expect(res.agentInfo.name).toBe(AGENT_INFO.name);
-    expect(res.capabilities.session).toBeDefined();
     expect(res.bridgeCapabilities.streaming).toBe(true);
     expect(res.bridgeCapabilities.tools).toBe(true);
     expect(res.bridgeCapabilities.resume).toBe(true);
     expect(res.availableModels).toContain('gemini-3.8-flash-high');
     expect(res.availableAgents).toContain('coder');
+
+    const v1 = await service.initializeV1();
+    expect(v1.protocolVersion).toBe(1);
+    expect(v1.agentCapabilities.loadSession).toBe(true);
+    expect(v1.agentCapabilities.sessionCapabilities.resume).toEqual({});
+    expect((v1 as any).capabilities).toBeUndefined();
+
+    const v2 = await service.initializeV2();
+    expect(v2.protocolVersion).toBe(2);
+    expect(v2.info.name).toBe(AGENT_INFO.name);
+    expect(v2.capabilities.session.additionalDirectories).toEqual({});
+    expect((v2 as any).agentCapabilities).toBeUndefined();
   });
 
   test('newSession rejects relative or missing cwd', async () => {
@@ -41,6 +52,15 @@ describe('AgyAcpService & SDK Agent', () => {
     expect(typeof res.sessionId).toBe('string');
     expect(res._meta?.model).toBe('test-model');
 
+    const model = (res.configOptions as any[]).find((option) => option.configId === 'model');
+    expect(model).toMatchObject({
+      type: 'select',
+      configId: 'model',
+      currentValue: 'test-model',
+    });
+    expect(model.id).toBeUndefined();
+    expect(model.options.some((option: any) => option.value === 'test-model')).toBe(true);
+
     const list = await service.listSessions({ cwd });
     expect(list.sessions.some((s: any) => s.sessionId === res.sessionId)).toBe(true);
 
@@ -53,8 +73,40 @@ describe('AgyAcpService & SDK Agent', () => {
     const created = await service.newSession({ cwd, model: 'gemini-3.8-flash-high' });
 
     const resumed = await service.resumeSession({ sessionId: created.sessionId });
-    expect(resumed.sessionId).toBe(created.sessionId);
     expect(resumed._meta?.model).toBe('gemini-3.8-flash-high');
+    expect(resumed.sessionId).toBeUndefined();
+    expect((resumed.configOptions as any[]).find((option) => option.configId === 'model'))
+      .toMatchObject({
+        type: 'select',
+        currentValue: 'gemini-3.8-flash-high',
+      });
+
+    await service.closeSession({ sessionId: created.sessionId });
+  });
+
+  test('v1 uses the legacy standard selector key id', async () => {
+    const service = new AgyAcpService();
+    const cwd = path.resolve(import.meta.dir, '../../');
+    const created = await service.newSession({
+      cwd,
+      protocolVersion: 1,
+      model: 'gemini-3.8-flash-high',
+    });
+
+    const model = (created.configOptions as any[]).find((option) => option.id === 'model');
+    expect(model).toMatchObject({
+      type: 'select',
+      id: 'model',
+      currentValue: 'gemini-3.8-flash-high',
+    });
+    expect(model.configId).toBeUndefined();
+
+    const resumed = await service.resumeSession({
+      sessionId: created.sessionId,
+      protocolVersion: 1,
+    });
+    expect((resumed.configOptions as any[]).some((option) => option.id === 'model')).toBe(true);
+    expect((resumed.configOptions as any[]).some((option) => option.configId === 'model')).toBe(false);
 
     await service.closeSession({ sessionId: created.sessionId });
   });
@@ -67,11 +119,17 @@ describe('AgyAcpService & SDK Agent', () => {
     const updated = await service.setConfigOption({
       sessionId: session.sessionId,
       configId: 'model',
-      value: 'updated-gemini-3.8',
+      value: 'gemini-3.8-flash-low',
     });
-    expect(updated.configId).toBe('model');
-    expect(updated.value).toBe('updated-gemini-3.8');
-    expect(updated._meta?.model).toBe('updated-gemini-3.8');
+    expect(updated.sessionId).toBeUndefined();
+    expect(updated.configId).toBeUndefined();
+    expect(updated.value).toBeUndefined();
+    expect(updated._meta?.model).toBe('gemini-3.8-flash-low');
+    expect((updated.configOptions as any[]).find((option) => option.configId === 'model'))
+      .toMatchObject({
+        type: 'select',
+        currentValue: 'gemini-3.8-flash-low',
+      });
 
     await service.closeSession({ sessionId: session.sessionId });
   });

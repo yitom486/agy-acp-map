@@ -2,6 +2,7 @@ import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import path from 'node:path';
 import * as fs from 'node:fs';
 import { AgyAcpService } from '../agent-sdk.ts';
+import { clearDiscoveryCache } from './agy-discovery.ts';
 
 describe('AgyAcpService Black-box Scenarios (Offline Simulation)', () => {
   let originalBin: string | undefined;
@@ -9,12 +10,14 @@ describe('AgyAcpService Black-box Scenarios (Offline Simulation)', () => {
   const testCwd = path.resolve(import.meta.dir, '../../');
 
   beforeAll(() => {
+    clearDiscoveryCache();
     originalBin = process.env.AGY_BIN;
     process.env.AGY_BIN = mockCliPath;
   });
 
   afterAll(() => {
     process.env.AGY_BIN = originalBin;
+    clearDiscoveryCache();
   });
 
   test('Tool Call: maps ACTIVE and DONE tool states into ACP tool updates', async () => {
@@ -189,7 +192,11 @@ describe('AgyAcpService Black-box Scenarios (Offline Simulation)', () => {
         configId: 'model',
         value: 'gemini-3.8-pro',
       });
-      expect(updated.value).toBe('gemini-3.8-pro');
+      expect((updated.configOptions as any[]).find((option) => option.configId === 'model'))
+        .toMatchObject({
+          type: 'select',
+          currentValue: 'gemini-3.8-pro',
+        });
 
       // Turn 2 under new model
       const res2 = await service.promptSession({

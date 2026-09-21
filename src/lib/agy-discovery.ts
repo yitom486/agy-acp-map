@@ -14,6 +14,7 @@ export interface DiscoveryResult {
 }
 
 let cached: DiscoveryResult | null = null;
+let cachedBin: string | null = null;
 let inflight: Promise<DiscoveryResult> | null = null;
 
 /**
@@ -81,6 +82,30 @@ function ensurePath(): void {
   }
 }
 
+function forceKill(child: any): void {
+  if (!child || child.exitCode != null || child.signalCode != null) return;
+  if (process.platform === 'win32' && typeof child.pid === 'number') {
+    try {
+      spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], {
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+      return;
+    } catch {
+      /* fall through */
+    }
+  }
+  try {
+    child.kill('SIGKILL');
+  } catch {
+    try {
+      child.kill();
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 /**
  * Run a short-lived agy subcommand; resolve { stdout, stderr, code } or error string.
  */
@@ -103,7 +128,7 @@ function runAgySubcommand(
       settled = true;
       resolve(payload);
     };
-    let child;
+    let child: any;
     try {
       let execBin = bin;
       let execArgs = args;
@@ -126,25 +151,21 @@ function runAgySubcommand(
       return;
     }
     const timer = setTimeout(() => {
-      try {
-        child.kill('SIGKILL');
-      } catch {
-        /* ignore */
-      }
+      forceKill(child);
       finish({ stdout, stderr, code: null, error: `timeout after ${timeoutMs}ms` });
     }, timeoutMs);
     timer.unref?.();
-    child.stdout?.on('data', (buf) => {
+    child.stdout?.on('data', (buf: Buffer) => {
       stdout += buf.toString();
     });
-    child.stderr?.on('data', (buf) => {
+    child.stderr?.on('data', (buf: Buffer) => {
       stderr += buf.toString();
     });
-    child.on('error', (err) => {
+    child.on('error', (err: Error) => {
       clearTimeout(timer);
       finish({ stdout, stderr, code: null, error: err.message });
     });
-    child.on('close', (code) => {
+    child.on('close', (code: number | null) => {
       clearTimeout(timer);
       finish({ stdout, stderr, code });
     });
@@ -152,27 +173,33 @@ function runAgySubcommand(
 }
 
 /**
- * Discover models + agents once per process. Failures → empty arrays + error notes.
+ * Official supported Antigravity models (verified 14 models).
  */
-const FALLBACK_MODELS = [
+export const DEFAULT_AGY_MODELS: string[] = [
   'gemini-3.8-flash-high',
   'gemini-3.8-flash-medium',
   'gemini-3.8-flash-low',
   'gemini-3.7-flash-high',
+  'gemini-3.7-flash-medium',
+  'gemini-3.7-flash-low',
   'gemini-3.6-flash-high',
+  'gemini-3.6-flash-medium',
+  'gemini-3.6-flash-low',
   'gemini-3.1-pro-high',
+  'gemini-3.1-pro-low',
   'claude-sonnet-4-6',
   'claude-opus-4-6-thinking',
+  'gpt-oss-120b-medium',
 ];
+
+export const FALLBACK_MODELS = DEFAULT_AGY_MODELS;
 
 export async function discoverAgyCatalog(opts?: {
   bin?: string;
   timeoutMs?: number;
   force?: boolean;
+  dynamic?: boolean;
 }): Promise<DiscoveryResult> {
-  if (cached && !opts?.force) return cached;
-  if (inflight && !opts?.force) return inflight;
-
   let bin = opts?.bin || process.env.AGY_BIN || 'agy';
   if (bin === 'agy' || bin === 'agy.exe') {
     const userGemini = path.join(process.env.USERPROFILE || process.env.HOME || '', '.gemini', 'bin', process.platform === 'win32' ? 'agy.exe' : 'agy');
@@ -180,6 +207,22 @@ export async function discoverAgyCatalog(opts?: {
       bin = userGemini;
     }
   }
+
+  if (cached && !opts?.force && (cachedBin === null || cachedBin === bin)) return cached;
+  if (inflight && !opts?.force) return inflight;
+
+  const isScriptMock = /\.(cjs|js|mjs|ts)$/i.test(bin);
+  const dynamic = opts?.dynamic ?? (process.env.AGY_DYNAMIC_DISCOVERY === 'true' || isScriptMock);
+  if (!dynamic) {
+    const staticResult: DiscoveryResult = {
+      availableModels: [...DEFAULT_AGY_MODELS],
+      availableAgents: [],
+    };
+    cached = staticResult;
+    cachedBin = bin;
+    return staticResult;
+  }
+
   const timeoutMs = opts?.timeoutMs ?? 15_000;
 
   inflight = (async () => {
@@ -189,16 +232,7 @@ export async function discoverAgyCatalog(opts?: {
       availableAgents: [],
     };
 
-    // Run models and agents discovery concurrently
-    const [modelsRun, agentsRun] = await Promise.all([
-      runAgySubcommand(bin, ['models'], timeoutMs),
-      runAgySubcommand(bin, ['agents'], timeoutMs).then(async (res) => {
-        if (res.error || (res.code !== 0 && !res.stdout.trim() && !parseAgyAgentsStdout(res.stderr).length)) {
-          return runAgySubcommand(bin, ['agent'], timeoutMs);
-        }
-        return res;
-      }),
-    ]);
+    const modelsRun = await runAgySubcommand(bin, ['models'], timeoutMs);
 
     if (modelsRun.error || (modelsRun.code !== 0 && modelsRun.code !== null && !modelsRun.stdout.trim())) {
       result.modelsError =
@@ -213,27 +247,12 @@ export async function discoverAgyCatalog(opts?: {
       }
     }
 
-    // If availableModels is still empty, apply high-performance defaults
     if (!result.availableModels.length) {
-      result.availableModels = [...FALLBACK_MODELS];
-    }
-
-    if (agentsRun.error || (agentsRun.code !== 0 && agentsRun.code !== null && !agentsRun.stdout.trim())) {
-      if (agentsRun.error || agentsRun.code !== 0) {
-        result.agentsError =
-          agentsRun.error ||
-          agentsRun.stderr.trim().slice(0, 200) ||
-          `agy agents exited ${agentsRun.code}`;
-        process.stderr.write(`[agy-acp] discovery agents failed: ${result.agentsError}\n`);
-      }
-    } else {
-      result.availableAgents = parseAgyAgentsStdout(agentsRun.stdout);
-      if (!result.availableAgents.length) {
-        result.availableAgents = parseAgyAgentsStdout(agentsRun.stderr);
-      }
+      result.availableModels = [...DEFAULT_AGY_MODELS];
     }
 
     cached = result;
+    cachedBin = bin;
     inflight = null;
     return result;
   })();
@@ -244,11 +263,13 @@ export async function discoverAgyCatalog(opts?: {
 /** Test helper: clear process-lifetime cache. */
 export function clearDiscoveryCache(): void {
   cached = null;
+  cachedBin = null;
   inflight = null;
 }
 
 export function setCachedDiscoveryForTest(result: DiscoveryResult | null): void {
   cached = result;
+  cachedBin = null;
   inflight = null;
 }
 
