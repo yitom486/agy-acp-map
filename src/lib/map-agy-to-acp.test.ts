@@ -221,6 +221,22 @@ describe('mapAgyEvent', () => {
     expect(usage!.params.update.size).toBe(1_048_576);
   });
 
+  test('cli size hint outranks the static table (future 2M Gemini)', () => {
+    const state = createMapperState();
+    const { notifications } = mapAgyEvent('s1', {
+      event: 'result',
+      result: {
+        status: 'SUCCESS',
+        conversation_id: 'c1',
+        response: 'done',
+        usage: { input_tokens: 100000, total_tokens: 101000, context_window: 2_000_000 },
+      },
+    }, state, { model: 'gemini-3.8-flash-high' });
+    const usage = notifications.find((n) => n.params.update.sessionUpdate === 'usage_update');
+    expect(usage!.params.update.used).toBe(100000);
+    expect(usage!.params.update.size).toBe(2_000_000);
+  });
+
   test('real wire shape: agent_response step usage emits progressive update', () => {
     const state = createMapperState();
     const { notifications } = mapAgyEvent('s1', {

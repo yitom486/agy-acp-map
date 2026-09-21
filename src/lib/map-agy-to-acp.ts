@@ -333,6 +333,32 @@ interface AgyUsage {
   thinking_tokens?: number;
   input_tokens?: number;
   output_tokens?: number;
+  // Forward-compatible size hints: agy does not emit these today
+  // (`models` prints id+name only), but if a future CLI reports its window,
+  // it outranks the static table (e.g. a 2M Gemini needs no code change).
+  context_window?: number;
+  context_window_tokens?: number;
+  max_context_tokens?: number;
+  max_input_tokens?: number;
+  input_limit?: number;
+  context_limit?: number;
+}
+
+/** Size hint straight from the CLI payload, when present and sane. */
+function usageSizeHint(u: AgyUsage | undefined): number | undefined {
+  if (!u || typeof u !== 'object') return undefined;
+  const candidates = [
+    u.context_window,
+    u.context_window_tokens,
+    u.max_context_tokens,
+    u.max_input_tokens,
+    u.input_limit,
+    u.context_limit,
+  ];
+  for (const c of candidates) {
+    if (typeof c === 'number' && Number.isFinite(c) && c > 0) return Math.floor(c);
+  }
+  return undefined;
 }
 
 /**
@@ -363,7 +389,7 @@ function toUsageUpdate(
   return notify(sessionId, {
     sessionUpdate: 'usage_update',
     used,
-    size: modelContextWindow(model),
+    size: usageSizeHint(u) ?? modelContextWindow(model),
     ...(Object.keys(meta).length ? { _meta: meta } : {}),
   });
 }
