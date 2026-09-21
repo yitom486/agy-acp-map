@@ -3,6 +3,11 @@
  * Official ACP SDK Server Entry Point (Dual v1 / v2 protocol support).
  * Connects standard Stdio to the AgyAcpService via @agentclientprotocol/sdk.
  */
+import { hideConsoleWindow } from './lib/win32-console.ts';
+
+// Immediately hide console window on Windows to prevent black box on connection
+hideConsoleWindow();
+
 import { Readable, Writable } from 'node:stream';
 import * as acp from '@agentclientprotocol/sdk';
 import { createDualAcpApp, AgyAcpService } from './agent-sdk.ts';

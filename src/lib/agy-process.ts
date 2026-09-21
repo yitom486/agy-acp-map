@@ -3,6 +3,8 @@
  * generation tokens, graceful→force kill, stale NDJSON ignore, spawn error handling.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
 import { createInterface } from 'node:readline';
 
 export const DEFAULT_GRACE_MS = 2000;
@@ -25,6 +27,69 @@ export interface SpawnAgyOptions extends AgyProcessCallbacks {
   env?: NodeJS.ProcessEnv;
   /** Optional override; manager increments its own generation when omitted. */
   generation?: number;
+}
+
+export interface AgyLaunchTarget {
+  bin: string;
+  args: string[];
+  /** True when a native Windows CREATE_NO_WINDOW shim is being used. */
+  headless: boolean;
+}
+
+/**
+ * Resolve the actual process target used for the Google CLI.
+ *
+ * Bun's Node-compatible spawn(..., {windowsHide: true}) is not sufficient for
+ * this CUI executable on every Windows runtime: the OS can still allocate a
+ * conhost.exe for agy.exe. The native shim creates agy with CREATE_NO_WINDOW
+ * and forwards all three standard streams unchanged.
+ */
+export function resolveAgyLaunchTarget(bin: string, args: string[]): AgyLaunchTarget {
+  if (process.platform !== 'win32' || !isAgyExecutable(bin)) {
+    return { bin, args, headless: false };
+  }
+
+  if (process.env.AGY_DISABLE_HEADLESS_LAUNCHER === '1') {
+    console.warn('[ACP-PROC] Windows headless agy launcher disabled by AGY_DISABLE_HEADLESS_LAUNCHER=1');
+    return { bin, args, headless: false };
+  }
+
+  const launcher = findHeadlessLauncher();
+  if (!launcher) {
+    console.warn(
+      '[ACP-PROC] Native Windows headless launcher was not found; spawning agy.exe directly. ' +
+        'Run "bun run build:headless" or set AGY_HEADLESS_LAUNCHER.',
+    );
+    return { bin, args, headless: false };
+  }
+
+  return {
+    bin: launcher,
+    args: [bin, ...args],
+    headless: true,
+  };
+}
+
+function isAgyExecutable(bin: string): boolean {
+  return path.basename(bin).toLowerCase() === 'agy.exe';
+}
+
+function findHeadlessLauncher(): string | null {
+  const moduleDir = (import.meta as ImportMeta & { dir?: string }).dir ?? path.dirname(process.argv[1] ?? '');
+  const candidates = [
+    process.env.AGY_HEADLESS_LAUNCHER,
+    // Source execution: src/lib -> repository root -> dist.
+    path.resolve(moduleDir, '..', '..', 'dist', 'agy-headless.exe'),
+    // Bundled execution: dist/bin.js -> dist.
+    path.resolve(moduleDir, 'agy-headless.exe'),
+    // Useful for package consumers and local development from another cwd.
+    path.resolve(process.cwd(), 'dist', 'agy-headless.exe'),
+  ];
+
+  for (const candidate of candidates) {
+    if (candidate && fs.existsSync(candidate)) return candidate;
+  }
+  return null;
 }
 
 /**
@@ -73,8 +138,12 @@ export class AgyProcessManager {
     this.generation = gen;
     this.callbacks = opts;
 
-    console.error(`[ACP-PROC] spawn: launching agy subprocess (gen: ${gen}) binary: ${opts.bin}`);
-    const child = spawn(opts.bin, opts.args, {
+    const target = resolveAgyLaunchTarget(opts.bin, opts.args);
+    console.error(
+      `[ACP-PROC] spawn: launching agy subprocess (gen: ${gen}) binary: ${target.bin}` +
+        `${target.headless ? ' [native CREATE_NO_WINDOW]' : ''}`,
+    );
+    const child = spawn(target.bin, target.args, {
       cwd: opts.cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       env: opts.env ?? { ...process.env },
