@@ -626,7 +626,7 @@ export class AgyAcpService {
     session.mapper = resetTurnState(session.mapper);
     session.updatedAt = new Date().toISOString();
 
-    console.log(`[ACP-SDK] promptSession: sid: ${sessionId}, isWritable: ${session.proc.isWritable()}, model: ${session.model}, text: "${text.slice(0, 60)}"`);
+    console.error(`[ACP-SDK] promptSession: sid: ${sessionId}, isWritable: ${session.proc.isWritable()}, model: ${session.model}, text: "${text.slice(0, 60)}"`);
 
     const messageId = `msg_user_${randomUUID().slice(0, 8)}`;
     queue.enqueue(() =>
@@ -659,7 +659,7 @@ export class AgyAcpService {
         isSettled = true;
         session.busy = false;
 
-        console.log(`[ACP-SDK] finish: ending turn for sid: ${sessionId} with stopReason: ${stopReason}`);
+        console.error(`[ACP-SDK] finish: ending turn for sid: ${sessionId} with stopReason: ${stopReason}`);
 
         queue.enqueue(async () => {
           // Check if soft-deny happened and emit note
@@ -758,7 +758,7 @@ export class AgyAcpService {
       };
 
       const onExit = (code: number | null) => {
-        console.log(`[ACP-SDK] onExit (sid: ${sessionId}): code: ${code}`);
+        console.error(`[ACP-SDK] onExit (sid: ${sessionId}): code: ${code}`);
         if (session.busy && !isSettled) {
           finish(session.cancelled ? 'cancelled' : 'end_turn');
         }
@@ -803,7 +803,7 @@ export class AgyAcpService {
       (async () => {
         try {
           if (!session.proc.isWritable()) {
-            console.log(`[ACP-SDK] session process not writable -> spawning new process for sid: ${sessionId}`);
+            console.error(`[ACP-SDK] session process not writable -> spawning new process for sid: ${sessionId}`);
             await session.proc.spawn({
               bin: execBin,
               args: execArgs,
@@ -814,7 +814,7 @@ export class AgyAcpService {
               onExit,
             });
           } else {
-            console.log(`[ACP-SDK] session process writable -> updating callbacks for consecutive turn, sid: ${sessionId}`);
+            console.error(`[ACP-SDK] session process writable -> updating callbacks for consecutive turn, sid: ${sessionId}`);
             session.proc.setCallbacks({
               onEvent,
               onError,
@@ -824,7 +824,7 @@ export class AgyAcpService {
           }
 
           const line = JSON.stringify(buildAgyUserMessage(text));
-          console.log(`[ACP-SDK] writing user message to stdin: len: ${line.length}`);
+          console.error(`[ACP-SDK] writing user message to stdin: len: ${line.length}`);
           session.proc.writeLine(line);
         } catch (err: any) {
           onError(err);
