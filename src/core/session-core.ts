@@ -305,15 +305,15 @@ export class AgySessionCore {
     };
   }
 
-  async listSessions(params?: any): Promise<{ sessions: any[] }> {
+  async listSessions(params?: any): Promise<{ sessions: any[]; nextCursor?: string | null }> {
     const filterCwd = params?.cwd;
     const disk = this.sessionStore.list(filterCwd);
     const diskById = new Map(disk.map((r) => [r.sessionId, r]));
 
-    const out: any[] = [];
+    const allSessions: any[] = [];
     for (const [id, s] of this.sessions.entries()) {
       if (filterCwd && s.cwd !== filterCwd) continue;
-      out.push({
+      allSessions.push({
         sessionId: s.sessionId,
         cwd: s.cwd,
         title: s.title,
@@ -326,7 +326,7 @@ export class AgySessionCore {
     }
 
     for (const r of diskById.values()) {
-      out.push({
+      allSessions.push({
         sessionId: r.sessionId,
         cwd: r.cwd,
         title: r.title,
@@ -337,7 +337,45 @@ export class AgySessionCore {
       });
     }
 
-    return { sessions: out };
+    // Stable descending sort by updatedAt
+    allSessions.sort((a, b) => {
+      const timeA = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
+      const timeB = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
+      return timeB - timeA;
+    });
+
+    // Pagination support per ACP v1/v2 schema
+    const cursor = params?.cursor;
+    const offset = cursor ? parseInt(cursor, 10) : 0;
+    const validOffset = Number.isFinite(offset) && offset >= 0 ? offset : 0;
+    const limit = 50;
+    const paged = allSessions.slice(validOffset, validOffset + limit);
+    const hasMore = validOffset + limit < allSessions.length;
+    const nextCursor = hasMore ? String(validOffset + limit) : null;
+
+    return { sessions: paged, nextCursor };
+  }
+
+  async deleteSession(params: any): Promise<{}> {
+    const sessionId = params?.sessionId;
+    if (!sessionId || typeof sessionId !== 'string') {
+      throw new RequestError(-32602, 'sessionId must be a non-empty string');
+    }
+
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      try {
+        await session.proc.kill();
+      } catch {
+        /* ignore */
+      }
+      cleanupSessionStaging(session.cwd);
+      session.stagedFiles = [];
+      this.sessions.delete(sessionId);
+    }
+
+    this.sessionStore.delete(sessionId);
+    return {};
   }
 
   async closeSession(params: any): Promise<{}> {

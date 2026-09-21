@@ -25,15 +25,43 @@ export function createAcpV2App(service: AgyAcpV2Service | any = new AgyAcpV2Serv
     )
     .onRequest(v2.methods.agent.session.list, (ctx) => service.listSessions(ctx.params))
     .onRequest(v2.methods.agent.session.close, (ctx) => service.closeSession(ctx.params))
-    .onRequest(v2.methods.agent.session.prompt, async (ctx: any) => {
-      await service.promptSession({ ...ctx.params, protocolVersion: 2 }, (update: any) => {
-        return (ctx.client as any).notify(v2.methods.client.session.update, {
-          sessionId: ctx.params.sessionId,
-          update,
-        });
-      });
-      // In ACP v2 draft, session/prompt response is empty ({ _meta?: ... }),
-      // and stopReason is reported in state_update: idle notification.
+    .onRequest(v2.methods.agent.session.delete, (ctx) => service.deleteSession(ctx.params))
+    .onRequest(v2.methods.agent.session.prompt, ({ params, client }: any) => {
+      const sessionId = params?.sessionId;
+      const session = service.core.sessions.get(sessionId);
+      if (!session) {
+        throw new v2.RequestError(-32001, `unknown sessionId: ${sessionId}`);
+      }
+      if (session.protocolVersion !== 2) {
+        throw new v2.RequestError(
+          -32602,
+          `Session ${sessionId} protocol mismatch: expected v${session.protocolVersion}, got v2`,
+        );
+      }
+      if (session.busy) {
+        throw new v2.RequestError(-32002, 'session is busy; wait for idle or cancel');
+      }
+
+      // Mark busy immediately so concurrent calls are rejected
+      session.busy = true;
+
+      // Start work in the next event-loop tick so the ACK response is queued on stdout before
+      // any session updates from the turn, strictly adhering to canonical ACP v2 architecture.
+      setTimeout(() => {
+        session.busy = false;
+        service
+          .promptSession({ ...params, protocolVersion: 2 }, (update: any) => {
+            return (client as any).notify(v2.methods.client.session.update, {
+              sessionId,
+              update,
+            });
+          })
+          .catch((err: any) => {
+            console.error('[ACP-V2] Background prompt turn error:', err);
+          });
+      }, 0);
+
+      // In ACP v2 draft, session/prompt acknowledges receipt immediately with {}
       return {};
     })
     .onNotification(v2.methods.agent.session.cancel, (ctx) => service.cancelSession(ctx.params));

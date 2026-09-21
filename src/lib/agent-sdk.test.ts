@@ -29,8 +29,9 @@ describe('AgyAcpService & SDK Agent', () => {
 
     const v1 = await service.initializeV1();
     expect(v1.protocolVersion).toBe(1);
-    expect(v1.agentCapabilities.loadSession).toBe(true);
+    expect(v1.agentCapabilities.loadSession).toBe(false);
     expect(v1.agentCapabilities.sessionCapabilities.resume).toEqual({});
+    expect(v1.agentCapabilities.sessionCapabilities.delete).toEqual({});
     expect((v1 as any).capabilities).toBeUndefined();
 
     const v2 = await service.initializeV2();
@@ -84,6 +85,21 @@ describe('AgyAcpService & SDK Agent', () => {
       });
 
     await service.closeSession({ sessionId: created.sessionId });
+  });
+
+  test('deleteSession removes session and disk records permanently', async () => {
+    const service = new AgyAcpService();
+    const cwd = path.resolve(import.meta.dir, '../../');
+    const created = await service.newSession({ cwd });
+
+    const listBefore = await service.listSessions({ cwd });
+    expect(listBefore.sessions.some((s: any) => s.sessionId === created.sessionId)).toBe(true);
+
+    const delRes = await service.deleteSession({ sessionId: created.sessionId });
+    expect(delRes).toEqual({});
+
+    const listAfter = await service.listSessions({ cwd });
+    expect(listAfter.sessions.some((s: any) => s.sessionId === created.sessionId)).toBe(false);
   });
 
   test('v2 uses configId selector key', async () => {

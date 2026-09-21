@@ -63,6 +63,10 @@ export class AgyAcpV2Service {
     return this.core.closeSession(params);
   }
 
+  async deleteSession(params: any): Promise<any> {
+    return this.core.deleteSession(params);
+  }
+
   cancelSession(params: any): void {
     this.core.cancelSession(params);
   }

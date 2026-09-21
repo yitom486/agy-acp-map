@@ -17,9 +17,6 @@ export function createAcpV1App(service: AgyAcpV1Service | any = new AgyAcpV1Serv
     .onRequest(v1.methods.agent.session.new, (ctx) =>
       service.newSession({ ...ctx.params, protocolVersion: 1 }) as any,
     )
-    .onRequest(v1.methods.agent.session.load, (ctx) =>
-      service.resumeSession({ ...ctx.params, protocolVersion: 1 }) as any,
-    )
     .onRequest(v1.methods.agent.session.resume, (ctx) =>
       service.resumeSession({ ...ctx.params, protocolVersion: 1 }) as any,
     )
@@ -28,6 +25,7 @@ export function createAcpV1App(service: AgyAcpV1Service | any = new AgyAcpV1Serv
     )
     .onRequest(v1.methods.agent.session.list, (ctx) => service.listSessions(ctx.params))
     .onRequest(v1.methods.agent.session.close, (ctx) => service.closeSession(ctx.params))
+    .onRequest(v1.methods.agent.session.delete, (ctx) => service.deleteSession(ctx.params))
     .onRequest(v1.methods.agent.session.prompt, async (ctx: any) => {
       const outcome = await service.promptSession({ ...ctx.params, protocolVersion: 1 }, (update: any) => {
         return (ctx.client as any).notify(v1.methods.client.session.update, {

@@ -38,7 +38,9 @@ describe('Simulated Integration Tests (Offline Mock CLI)', () => {
       // Official ACP V1 Schema compliance
       expect(res.protocolVersion).toBe(1);
       expect(res.agentInfo.name).toBe(AGENT_INFO.name);
-      expect(res.agentCapabilities.loadSession).toBe(true);
+      expect(res.agentCapabilities.loadSession).toBe(false);
+      expect(res.agentCapabilities.sessionCapabilities.delete).toBeDefined();
+      expect(res.agentCapabilities.sessionCapabilities.resume).toBeDefined();
 
       // Verify non-standard extensions are strictly under _meta
       expect((res as any).availableModels).toBeUndefined();
@@ -147,6 +149,7 @@ describe('Simulated Integration Tests (Offline Mock CLI)', () => {
       expect(res.protocolVersion).toBe(2);
       expect(res.info.name).toBe(AGENT_INFO.name);
       expect(res.capabilities.session.additionalDirectories).toBeDefined();
+      expect(res.capabilities.session.delete).toBeDefined();
 
       // Verify non-standard extensions are strictly under _meta
       expect((res as any).availableModels).toBeUndefined();
@@ -307,6 +310,64 @@ describe('Simulated Integration Tests (Offline Mock CLI)', () => {
       await expect(v2Service.resumeSession({ sessionId: legacySessionId })).rejects.toThrow(
         /created with ACP v1 and cannot be resumed with v2/,
       );
+
+      // Clean up legacy session from store
+      await v1Service.deleteSession({ sessionId: legacySessionId });
+    });
+  });
+
+  describe('Standard ACP Session Lifecycle Enhancements', () => {
+    test('session/delete terminates running process and purges memory and disk store', async () => {
+      const core = new AgySessionCore();
+      const v1Service = new AgyAcpV1Service(core);
+
+      const { sessionId } = await v1Service.newSession({ cwd: testCwd });
+      expect(core.sessions.has(sessionId)).toBe(true);
+      expect(core.sessionStore.get(sessionId)).toBeDefined();
+
+      // Invoke standard deleteSession
+      const deleteResult = await v1Service.deleteSession({ sessionId });
+      expect(deleteResult).toEqual({});
+
+      // Memory and disk entries are completely purged
+      expect(core.sessions.has(sessionId)).toBe(false);
+      expect(core.sessionStore.get(sessionId)).toBeUndefined();
+    });
+
+    test('session/list returns deterministically sorted sessions with nextCursor pagination', async () => {
+      const core = new AgySessionCore();
+      const v1Service = new AgyAcpV1Service(core);
+
+      // Create 3 sessions
+      const s1 = await v1Service.newSession({ cwd: testCwd });
+      const s2 = await v1Service.newSession({ cwd: testCwd });
+      const s3 = await v1Service.newSession({ cwd: testCwd });
+
+      const listResult = await v1Service.listSessions({ cwd: testCwd });
+      expect(Array.isArray(listResult.sessions)).toBe(true);
+      expect(listResult.sessions.length).toBeGreaterThanOrEqual(3);
+
+      // Verify descending sort order by updatedAt
+      for (let i = 0; i < listResult.sessions.length - 1; i++) {
+        const timeCurr = new Date(listResult.sessions[i].updatedAt).getTime();
+        const timeNext = new Date(listResult.sessions[i + 1].updatedAt).getTime();
+        expect(timeCurr).toBeGreaterThanOrEqual(timeNext);
+      }
+
+      // Verify nextCursor behavior based on total session count
+      if (listResult.sessions.length < 50) {
+        expect(listResult.nextCursor).toBeNull();
+      } else {
+        expect(typeof listResult.nextCursor).toBe('string');
+        const page2 = await v1Service.listSessions({ cwd: testCwd, cursor: listResult.nextCursor });
+        expect(Array.isArray(page2.sessions)).toBe(true);
+      }
+
+      // Clean up created sessions
+      await v1Service.deleteSession({ sessionId: s1.sessionId });
+      await v1Service.deleteSession({ sessionId: s2.sessionId });
+      await v1Service.deleteSession({ sessionId: s3.sessionId });
     });
   });
 });
+

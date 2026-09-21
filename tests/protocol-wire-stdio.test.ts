@@ -92,6 +92,14 @@ describe('Wire-level Stdio JSON-RPC Integration (Full sdk-server Process)', () =
       const firstCallIdx = sessionUpdates.findIndex((u) => u.sessionUpdate === 'tool_call');
       const firstUpdateIdx = sessionUpdates.findIndex((u) => u.sessionUpdate === 'tool_call_update');
       expect(firstCallIdx).toBeLessThan(firstUpdateIdx);
+
+      // Verify V1 capability honesty: loadSession is false, delete is supported
+      expect(initRes.agentCapabilities?.loadSession).toBe(false);
+      expect(initRes.agentCapabilities?.sessionCapabilities?.delete).toBeDefined();
+
+      // 5. Delete session over stdio wire
+      const deleteRes = await harness.send('session/delete', { sessionId });
+      expect(deleteRes).toEqual({});
     },
     20000,
   );
@@ -121,6 +129,7 @@ describe('Wire-level Stdio JSON-RPC Integration (Full sdk-server Process)', () =
       expect(topKeys).not.toContain('availableModels');
       expect(topKeys).not.toContain('availableAgents');
       expect(initRes._meta).toBeDefined();
+      expect(initRes.capabilities?.session?.delete).toBeDefined();
 
       // 2. New Session V2
       const sessionRes = await harness.send('session/new', {
@@ -154,6 +163,10 @@ describe('Wire-level Stdio JSON-RPC Integration (Full sdk-server Process)', () =
       expect(stateUpdates[0].state).toBe('running');
       expect(stateUpdates[stateUpdates.length - 1].state).toBe('idle');
       expect(stateUpdates[stateUpdates.length - 1].stopReason).toBe('end_turn');
+
+      // 5. Delete session over stdio wire
+      const deleteRes = await harness.send('session/delete', { sessionId });
+      expect(deleteRes).toEqual({});
     },
     20000,
   );
@@ -201,6 +214,28 @@ describe('Wire-level Stdio JSON-RPC Integration (Full sdk-server Process)', () =
       expect(caughtError).toBeDefined();
       expect(caughtError.code).toBe(-32602);
       expect(caughtError.message).toMatch(/created with ACP v1 and cannot be resumed with v2/);
+    },
+    20000,
+  );
+
+  test(
+    'Wire-level Session List: returns sessions array and pagination nextCursor over stdio wire',
+    async () => {
+      const harness = createSmokeHarness({
+        tag: 'list-wire',
+        env: { AGY_BIN: mockCliPath, NODE_ENV: 'test' },
+      });
+      activeHarness = harness;
+
+      await harness.send('initialize', {
+        protocolVersion: 1,
+        capabilities: {},
+        info: { name: 'list-client', version: '0.1.0' },
+      });
+
+      const listRes = await harness.send('session/list', { cwd: repoRoot });
+      expect(Array.isArray(listRes.sessions)).toBe(true);
+      expect('nextCursor' in listRes).toBe(true);
     },
     20000,
   );

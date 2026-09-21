@@ -75,6 +75,13 @@ export class AgyAcpService {
     return this.core.closeSession(params);
   }
 
+  async deleteSession(params: any): Promise<any> {
+    const targetSession = this.core.sessions.get(params?.sessionId);
+    const version: ProtocolVersion =
+      params?.protocolVersion === 2 || targetSession?.protocolVersion === 2 ? 2 : 1;
+    return version === 2 ? this.v2.deleteSession(params) : this.v1.deleteSession(params);
+  }
+
   cancelSession(params: any): void {
     this.core.cancelSession(params);
   }
