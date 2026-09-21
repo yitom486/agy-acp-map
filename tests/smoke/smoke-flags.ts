@@ -307,10 +307,11 @@ try {
     capabilities: {},
     info: { name: 'agy-acp-smoke-flags', version: '0.0.1' },
   });
-  if (init.bridgeCapabilities?.dynamicConfig !== 'restart') {
+  const bridgeCaps = init.bridgeCapabilities || init._meta?.bridgeCapabilities;
+  if (bridgeCaps?.dynamicConfig !== 'restart') {
     throw new Error('bridgeCapabilities.dynamicConfig expected restart');
   }
-  if (init.bridgeCapabilities?.resume !== true) {
+  if (bridgeCaps?.resume !== true) {
     throw new Error('bridgeCapabilities.resume expected true');
   }
 
@@ -324,6 +325,7 @@ try {
     const cfg = await send('session/set_config_option', {
       sessionId,
       configId: 'model',
+      type: 'id',
       value: MODEL,
     });
     log('set_config', cfg);
