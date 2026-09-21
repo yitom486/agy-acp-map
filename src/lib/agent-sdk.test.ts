@@ -19,11 +19,13 @@ describe('AgyAcpService & SDK Agent', () => {
     const service = new AgyAcpService();
     const res = await service.initialize();
     expect(res.agentInfo.name).toBe(AGENT_INFO.name);
-    expect(res.bridgeCapabilities.streaming).toBe(true);
-    expect(res.bridgeCapabilities.tools).toBe(true);
-    expect(res.bridgeCapabilities.resume).toBe(true);
-    expect(res.availableModels).toContain('gemini-3.8-flash-high');
-    expect(res.availableAgents).toContain('coder');
+    expect(res._meta.bridgeCapabilities.streaming).toBe(true);
+    expect(res._meta.bridgeCapabilities.tools).toBe(true);
+    expect(res._meta.bridgeCapabilities.resume).toBe(true);
+    expect(res._meta.availableModels).toContain('gemini-3.8-flash-high');
+    expect(res._meta.availableAgents).toContain('coder');
+    expect((res as any).bridgeCapabilities).toBeUndefined();
+    expect((res as any).availableModels).toBeUndefined();
 
     const v1 = await service.initializeV1();
     expect(v1.protocolVersion).toBe(1);

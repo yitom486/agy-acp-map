@@ -1,6 +1,5 @@
 import * as v2 from '@agentclientprotocol/sdk/experimental/v2';
 import { AGENT_INFO } from '../core/types.ts';
-import { formatUpdateForProtocol } from '../lib/map-agy-to-acp.ts';
 import { AgyAcpV2Service } from './adapter.ts';
 
 /**
@@ -27,15 +26,15 @@ export function createAcpV2App(service: AgyAcpV2Service | any = new AgyAcpV2Serv
     .onRequest(v2.methods.agent.session.list, (ctx) => service.listSessions(ctx.params))
     .onRequest(v2.methods.agent.session.close, (ctx) => service.closeSession(ctx.params))
     .onRequest(v2.methods.agent.session.prompt, async (ctx: any) => {
-      return (await service.promptSession({ ...ctx.params, protocolVersion: 2 }, (update: any) => {
-        const formatted = formatUpdateForProtocol(update, 2);
-        if (formatted) {
-          return (ctx.client as any).notify(v2.methods.client.session.update, {
-            sessionId: ctx.params.sessionId,
-            update: formatted,
-          });
-        }
-      })) as any;
+      await service.promptSession({ ...ctx.params, protocolVersion: 2 }, (update: any) => {
+        return (ctx.client as any).notify(v2.methods.client.session.update, {
+          sessionId: ctx.params.sessionId,
+          update,
+        });
+      });
+      // In ACP v2 draft, session/prompt response is empty ({ _meta?: ... }),
+      // and stopReason is reported in state_update: idle notification.
+      return {};
     })
     .onNotification(v2.methods.agent.session.cancel, (ctx) => service.cancelSession(ctx.params));
 }

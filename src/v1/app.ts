@@ -1,6 +1,5 @@
 import * as v1 from '@agentclientprotocol/sdk';
 import { AGENT_INFO } from '../core/types.ts';
-import { formatUpdateForProtocol } from '../lib/map-agy-to-acp.ts';
 import { AgyAcpV1Service } from './adapter.ts';
 
 /**
@@ -30,15 +29,13 @@ export function createAcpV1App(service: AgyAcpV1Service | any = new AgyAcpV1Serv
     .onRequest(v1.methods.agent.session.list, (ctx) => service.listSessions(ctx.params))
     .onRequest(v1.methods.agent.session.close, (ctx) => service.closeSession(ctx.params))
     .onRequest(v1.methods.agent.session.prompt, async (ctx: any) => {
-      return (await service.promptSession({ ...ctx.params, protocolVersion: 1 }, (update: any) => {
-        const formatted = formatUpdateForProtocol(update, 1);
-        if (formatted) {
-          return (ctx.client as any).notify(v1.methods.client.session.update, {
-            sessionId: ctx.params.sessionId,
-            update: formatted,
-          });
-        }
-      })) as any;
+      const outcome = await service.promptSession({ ...ctx.params, protocolVersion: 1 }, (update: any) => {
+        return (ctx.client as any).notify(v1.methods.client.session.update, {
+          sessionId: ctx.params.sessionId,
+          update,
+        });
+      });
+      return { stopReason: outcome?.stopReason || 'end_turn' };
     })
     .onNotification(v1.methods.agent.session.cancel, (ctx) => service.cancelSession(ctx.params));
 }

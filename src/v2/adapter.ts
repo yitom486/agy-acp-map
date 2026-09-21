@@ -1,5 +1,6 @@
 import { AGENT_INFO, BRIDGE_CAPABILITIES } from '../core/types.ts';
 import { AgySessionCore } from '../core/session-core.ts';
+import { formatUpdateForProtocol } from '../lib/map-agy-to-acp.ts';
 import { V2_AGENT_CAPABILITIES } from './types.ts';
 import { buildV2ConfigOptions } from './config.ts';
 
@@ -10,18 +11,12 @@ export class AgyAcpV2Service {
     const discovery = await this.core.getDiscovery();
     const configOptions = buildV2ConfigOptions(discovery);
 
+    // Strictly conforms to ACP v2 InitializeResponse schema:
+    // Only protocolVersion, info, capabilities, authMethods, _meta
     return {
       protocolVersion: 2,
       info: AGENT_INFO,
       capabilities: V2_AGENT_CAPABILITIES,
-      availableModels: discovery.availableModels,
-      availableAgents: discovery.availableAgents,
-      bridgeCapabilities: {
-        ...BRIDGE_CAPABILITIES,
-        availableModels: discovery.availableModels,
-        availableAgents: discovery.availableAgents,
-        configOptions,
-      },
       _meta: {
         bridgeCapabilities: {
           ...BRIDGE_CAPABILITIES,
@@ -72,10 +67,32 @@ export class AgyAcpV2Service {
     this.core.cancelSession(params);
   }
 
-  promptSession(
+  async promptSession(
     params: any,
     notifyClient: (update: any) => Promise<void> | void,
   ): Promise<{ stopReason: string }> {
-    return this.core.promptTurn(params, 2, notifyClient);
+    // Notify running state at the start of prompt processing
+    await notifyClient({
+      sessionUpdate: 'state_update',
+      state: 'running',
+    });
+
+    const outcome = await this.core.promptTurn(params, 2, async (update) => {
+      const formatted = formatUpdateForProtocol(update, 2);
+      if (formatted) {
+        await notifyClient(formatted);
+      }
+    });
+
+    const stopReason = outcome?.stopReason || 'end_turn';
+
+    // Notify idle state with stopReason upon turn completion
+    await notifyClient({
+      sessionUpdate: 'state_update',
+      state: 'idle',
+      stopReason,
+    });
+
+    return { stopReason };
   }
 }

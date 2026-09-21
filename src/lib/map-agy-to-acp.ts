@@ -128,35 +128,19 @@ export function formatUpdateForProtocol(
   if (protocolVersion >= 2) return update;
 
   // Protocol v1 formatting:
-  // In v1, state_update does not exist; return null so it is not emitted as a session update notification.
+  // In v1, state_update does not exist; return null so it is not emitted.
   if (update.sessionUpdate === 'state_update') {
     return null;
   }
 
-  // Protocol v1 downgrade for tool calls:
-  if (update.sessionUpdate === 'tool_call_update') {
-    return {
-      sessionUpdate: 'tool_call',
-      toolCallId: update.toolCallId,
-      name: update.title,
-      title: update.title,
-      status: update.status,
-      content: update.content,
-      rawInput: update.rawInput,
-      rawOutput: update.rawOutput,
-      rawError: update.rawError,
-    };
+  // In v1, user_message is not part of the SessionUpdate union and prompt echoes are not expected;
+  // return null so it is not emitted.
+  if (update.sessionUpdate === 'user_message') {
+    return null;
   }
 
-  // Protocol v1 downgrade for thought stream:
-  if (update.sessionUpdate === 'agent_thought_chunk') {
-    return {
-      sessionUpdate: 'agent_message_chunk',
-      messageId: update.messageId,
-      content: update.content,
-    };
-  }
-
+  // ACP v1 natively supports agent_thought_chunk, tool_call, tool_call_update, agent_message_chunk.
+  // Preserving them allows clients like Zed to show thoughts and tool states natively.
   return update;
 }
 

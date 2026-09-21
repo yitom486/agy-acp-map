@@ -1,5 +1,6 @@
 import { AGENT_INFO, BRIDGE_CAPABILITIES } from '../core/types.ts';
 import { AgySessionCore } from '../core/session-core.ts';
+import { formatUpdateForProtocol } from '../lib/map-agy-to-acp.ts';
 import { V1_AGENT_CAPABILITIES } from './types.ts';
 import { buildV1ConfigOptions } from './config.ts';
 
@@ -10,18 +11,12 @@ export class AgyAcpV1Service {
     const discovery = await this.core.getDiscovery();
     const configOptions = buildV1ConfigOptions(discovery);
 
+    // Strictly conforms to ACP v1 InitializeResponse schema:
+    // Only protocolVersion, agentInfo, agentCapabilities, authMethods, _meta
     return {
       protocolVersion: 1,
       agentInfo: AGENT_INFO,
       agentCapabilities: V1_AGENT_CAPABILITIES,
-      availableModels: discovery.availableModels,
-      availableAgents: discovery.availableAgents,
-      bridgeCapabilities: {
-        ...BRIDGE_CAPABILITIES,
-        availableModels: discovery.availableModels,
-        availableAgents: discovery.availableAgents,
-        configOptions,
-      },
       _meta: {
         bridgeCapabilities: {
           ...BRIDGE_CAPABILITIES,
@@ -76,6 +71,11 @@ export class AgyAcpV1Service {
     params: any,
     notifyClient: (update: any) => Promise<void> | void,
   ): Promise<{ stopReason: string }> {
-    return this.core.promptTurn(params, 1, notifyClient);
+    return this.core.promptTurn(params, 1, async (update) => {
+      const formatted = formatUpdateForProtocol(update, 1);
+      if (formatted) {
+        await notifyClient(formatted);
+      }
+    });
   }
 }

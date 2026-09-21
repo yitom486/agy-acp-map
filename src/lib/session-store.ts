@@ -25,6 +25,7 @@ export type SessionRecord = {
   jsonSchema?: string;
   printTimeout?: string;
   disableSlashCommands?: boolean;
+  protocolVersion?: 1 | 2;
   createdAt: string;
   updatedAt: string;
 };
@@ -67,6 +68,7 @@ export function sessionToRecord(session: {
   jsonSchema?: string;
   printTimeout?: string;
   disableSlashCommands?: boolean;
+  protocolVersion?: 1 | 2;
 }): SessionRecord {
   const rec: SessionRecord = {
     sessionId: session.sessionId,
@@ -74,6 +76,7 @@ export function sessionToRecord(session: {
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
   };
+  if (session.protocolVersion !== undefined) rec.protocolVersion = session.protocolVersion;
   if (session.conversationId) rec.conversationId = session.conversationId;
   if (session.title !== undefined) rec.title = session.title;
   if (session.additionalDirectories?.length) {
@@ -114,12 +117,14 @@ export function recordLaunchFields(record: SessionRecord): {
   jsonSchema?: string;
   printTimeout?: string;
   disableSlashCommands?: boolean;
+  protocolVersion?: 1 | 2;
 } {
   return {
     sessionId: record.sessionId,
     cwd: record.cwd,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
+    ...(record.protocolVersion !== undefined ? { protocolVersion: record.protocolVersion } : {}),
     ...(record.title !== undefined ? { title: record.title } : {}),
     ...(record.conversationId ? { conversationId: record.conversationId } : {}),
     ...(record.additionalDirectories?.length

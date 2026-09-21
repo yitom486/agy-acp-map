@@ -7,7 +7,6 @@ import {
   createMapperState,
   resetTurnState,
   mapAgyEvent,
-  formatUpdateForProtocol,
   buildAgyUserMessage,
   richRootsFromSession,
 } from '../lib/map-agy-to-acp.ts';
@@ -122,7 +121,7 @@ export class AgySessionCore {
       mapper,
       busy: false,
       cancelled: false,
-      protocolVersion,
+      protocolVersion, // Bound permanently upon creation
       stderrBuf: '',
       softDenies: [],
       softDenyEmitted: false,
@@ -167,6 +166,14 @@ export class AgySessionCore {
         throw new RequestError(-32001, `Session not found: ${sessionId}`);
       }
 
+      const recordedVersion = record.protocolVersion ?? protocolVersion;
+      if (recordedVersion !== protocolVersion) {
+        throw new RequestError(
+          -32602,
+          `Session ${sessionId} was created with ACP v${recordedVersion} and cannot be resumed with v${protocolVersion}`,
+        );
+      }
+
       const cwd = record.cwd || params?.cwd || process.cwd();
       const richRoots = richRootsFromSession({
         cwd,
@@ -188,7 +195,7 @@ export class AgySessionCore {
         mapper,
         busy: false,
         cancelled: false,
-        protocolVersion,
+        protocolVersion: recordedVersion,
         stderrBuf: '',
         softDenies: [],
         softDenyEmitted: false,
@@ -208,7 +215,12 @@ export class AgySessionCore {
 
       this.sessions.set(sessionId, session);
     } else {
-      session.protocolVersion = protocolVersion;
+      if (session.protocolVersion !== protocolVersion) {
+        throw new RequestError(
+          -32602,
+          `Session ${sessionId} was created with ACP v${session.protocolVersion} and cannot be resumed with v${protocolVersion}`,
+        );
+      }
       session.updatedAt = new Date().toISOString();
     }
 
@@ -242,6 +254,13 @@ export class AgySessionCore {
     const session = this.sessions.get(sessionId);
     if (!session) {
       throw new RequestError(-32001, `unknown sessionId: ${sessionId}`);
+    }
+
+    if (session.protocolVersion !== protocolVersion) {
+      throw new RequestError(
+        -32602,
+        `Session ${sessionId} was created with ACP v${session.protocolVersion} and cannot be modified with v${protocolVersion}`,
+      );
     }
 
     if (typeof configId !== 'string' || value === undefined) {
@@ -356,11 +375,17 @@ export class AgySessionCore {
     if (!session) {
       return Promise.reject(new RequestError(-32001, `unknown sessionId: ${sessionId}`));
     }
+    if (session.protocolVersion !== protocolVersion) {
+      return Promise.reject(
+        new RequestError(
+          -32602,
+          `Session ${sessionId} protocol mismatch: expected v${session.protocolVersion}, got v${protocolVersion}`,
+        ),
+      );
+    }
     if (session.busy) {
       return Promise.reject(new RequestError(-32002, 'session is busy; wait for idle or cancel'));
     }
-
-    session.protocolVersion = protocolVersion;
 
     const { text, notes, stagedFiles } = normalizePromptBlocksSync(params?.prompt || [], {
       cwd: session.cwd,
@@ -390,28 +415,13 @@ export class AgySessionCore {
     );
 
     const messageId = `msg_user_${randomUUID().slice(0, 8)}`;
-    queue.enqueue(() => {
-      const userUpdate = formatUpdateForProtocol(
-        {
-          sessionUpdate: 'user_message',
-          messageId,
-          content: [{ type: 'text', text }],
-        },
-        session.protocolVersion,
-      );
-      if (userUpdate) {
-        notifyClient(userUpdate);
-      }
+    queue.enqueue(async () => {
+      await notifyClient({
+        sessionUpdate: 'user_message',
+        messageId,
+        content: [{ type: 'text', text }],
+      });
     });
-
-    if (session.protocolVersion >= 2) {
-      queue.enqueue(() =>
-        notifyClient({
-          sessionUpdate: 'state_update',
-          state: 'running',
-        }),
-      );
-    }
 
     return new Promise<{ stopReason: string }>((resolve) => {
       let isSettled = false;
@@ -429,26 +439,12 @@ export class AgySessionCore {
             session.softDenyEmitted = true;
             const msg = formatSoftDenyMessage(session.softDenies);
             if (msg) {
-              const softDenyUpdate = formatUpdateForProtocol(
-                {
-                  sessionUpdate: 'agent_message_chunk',
-                  messageId: `msg_agent_soft_deny_${Date.now()}`,
-                  content: { type: 'text', text: '\n\n' + msg },
-                },
-                session.protocolVersion,
-              );
-              if (softDenyUpdate) {
-                await notifyClient(softDenyUpdate);
-              }
+              await notifyClient({
+                sessionUpdate: 'agent_message_chunk',
+                messageId: `msg_agent_soft_deny_${Date.now()}`,
+                content: { type: 'text', text: '\n\n' + msg },
+              });
             }
-          }
-
-          if (session.protocolVersion >= 2) {
-            await notifyClient({
-              sessionUpdate: 'state_update',
-              state: 'idle',
-              stopReason,
-            });
           }
 
           this.persistSession(session);
@@ -488,10 +484,7 @@ export class AgySessionCore {
                 finish(u.stopReason || 'end_turn');
                 return;
               }
-              const formatted = formatUpdateForProtocol(u, session.protocolVersion);
-              if (formatted) {
-                await notifyClient(formatted);
-              }
+              await notifyClient(u);
             }
           }
         });
@@ -500,17 +493,11 @@ export class AgySessionCore {
       const onError = (err: Error) => {
         console.error(`[ACP-SDK] onError (sid: ${sessionId}):`, err.message);
         queue.enqueue(async () => {
-          const errUpdate = formatUpdateForProtocol(
-            {
-              sessionUpdate: 'agent_message_chunk',
-              messageId: `msg_agent_err_${Date.now()}`,
-              content: { type: 'text', text: `\n[agy error] ${err.message}` },
-            },
-            session.protocolVersion,
-          );
-          if (errUpdate) {
-            await notifyClient(errUpdate);
-          }
+          await notifyClient({
+            sessionUpdate: 'agent_message_chunk',
+            messageId: `msg_agent_err_${Date.now()}`,
+            content: { type: 'text', text: `\n[agy error] ${err.message}` },
+          });
           finish('end_turn');
         });
       };
