@@ -39,8 +39,17 @@ export class AgyAcpV2Service {
     };
   }
 
-  async resumeSession(params: any): Promise<any> {
+  async resumeSession(
+    params: any,
+    notifyClient?: (update: any) => Promise<void> | void,
+  ): Promise<any> {
     const { session, discovery, meta } = await this.core.resumeSession(params, 2);
+    if (params?.replayFrom?.type === 'start') {
+      if (!notifyClient) {
+        throw new Error('session/resume replay requires an ACP client notification channel');
+      }
+      await this.core.replayHistory(session.sessionId, 2, notifyClient);
+    }
     return {
       configOptions: buildV2ConfigOptions(discovery, session),
       ...(meta ? { _meta: meta } : {}),

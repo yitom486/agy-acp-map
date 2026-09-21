@@ -32,4 +32,5 @@ export * from './lib/rich-content.ts';
 export * from './lib/path-allowlist.ts';
 export * from './lib/agy-discovery.ts';
 export * from './lib/session-store.ts';
+export * from './lib/session-history.ts';
 export * from './lib/win32-console.ts';

@@ -1,6 +1,7 @@
 /**
  * Lightweight on-disk session index for ACP sessionId ↔ agy conversationId mapping.
- * Does NOT store transcripts — Client / zustand owns history.
+ * This store remains metadata-only. Display history, when enabled, is stored
+ * separately by SessionHistoryStore as a small JSONL journal.
  *
  * Default path: ~/.agy-acp-map/sessions.json
  * Override: AGY_ACP_STORE or AGY_ACP_SESSION_STORE

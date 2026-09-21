@@ -6,11 +6,15 @@ import { setCachedDiscoveryForTest, clearDiscoveryCache } from './agy-discovery.
 
 describe('AgyAcpService & SDK Agent', () => {
   let originalStore: string | undefined;
+  let originalHistory: string | undefined;
   const tmpStore = path.resolve(import.meta.dir, `../../scratch/test-store-agent-sdk-${process.pid}-${Date.now()}.json`);
+  const tmpHistory = path.resolve(import.meta.dir, `../../scratch/test-history-agent-sdk-${process.pid}-${Date.now()}`);
 
   beforeAll(() => {
     originalStore = process.env.AGY_ACP_SESSION_STORE;
+    originalHistory = process.env.AGY_ACP_HISTORY_DIR;
     process.env.AGY_ACP_SESSION_STORE = tmpStore;
+    process.env.AGY_ACP_HISTORY_DIR = tmpHistory;
     setCachedDiscoveryForTest({
       availableModels: ['gemini-3.8-flash-high', 'gemini-3.8-flash-low'],
       availableAgents: ['coder', 'architect'],
@@ -23,9 +27,15 @@ describe('AgyAcpService & SDK Agent', () => {
     } else {
       delete process.env.AGY_ACP_SESSION_STORE;
     }
+    if (originalHistory !== undefined) {
+      process.env.AGY_ACP_HISTORY_DIR = originalHistory;
+    } else {
+      delete process.env.AGY_ACP_HISTORY_DIR;
+    }
     clearDiscoveryCache();
     try {
       if (fs.existsSync(tmpStore)) fs.unlinkSync(tmpStore);
+      if (fs.existsSync(tmpHistory)) fs.rmSync(tmpHistory, { recursive: true, force: true });
     } catch {
       /* ignore */
     }
@@ -45,7 +55,7 @@ describe('AgyAcpService & SDK Agent', () => {
 
     const v1 = await service.initializeV1();
     expect(v1.protocolVersion).toBe(1);
-    expect(v1.agentCapabilities.loadSession).toBe(false);
+    expect(v1.agentCapabilities.loadSession).toBe(true);
     expect(v1.agentCapabilities.sessionCapabilities.resume).toEqual({});
     expect(v1.agentCapabilities.sessionCapabilities.delete).toEqual({});
     expect((v1 as any).capabilities).toBeUndefined();

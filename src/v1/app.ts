@@ -17,6 +17,19 @@ export function createAcpV1App(service: AgyAcpV1Service | any = new AgyAcpV1Serv
     .onRequest(v1.methods.agent.session.new, (ctx) =>
       service.newSession({ ...ctx.params, protocolVersion: 1 }) as any,
     )
+    .onRequest(v1.methods.agent.session.load, async (ctx) => {
+      if (typeof service.loadSession !== 'function') {
+        throw new v1.RequestError(-32601, 'session/load is not supported');
+      }
+      return service.loadSession(
+        { ...ctx.params, protocolVersion: 1 },
+        (update: any) =>
+          (ctx.client as any).notify(v1.methods.client.session.update, {
+            sessionId: ctx.params.sessionId,
+            update,
+          }),
+      ) as any;
+    })
     .onRequest(v1.methods.agent.session.resume, (ctx) =>
       service.resumeSession({ ...ctx.params, protocolVersion: 1 }) as any,
     )

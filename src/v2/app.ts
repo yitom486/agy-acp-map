@@ -19,7 +19,14 @@ export function createAcpV2App(service: AgyAcpV2Service | any = new AgyAcpV2Serv
       service.newSession({ ...ctx.params, protocolVersion: 2 }) as any,
     )
     .onRequest(v2.methods.agent.session.resume, (ctx) =>
-      service.resumeSession({ ...ctx.params, protocolVersion: 2 }) as any,
+      service.resumeSession(
+        { ...ctx.params, protocolVersion: 2 },
+        (update: any) =>
+          (ctx.client as any).notify(v2.methods.client.session.update, {
+            sessionId: ctx.params.sessionId,
+            update,
+          }),
+      ) as any,
     )
     .onRequest(v2.methods.agent.session.setConfigOption, (ctx) =>
       service.setConfigOption({ ...ctx.params, protocolVersion: 2 }) as any,

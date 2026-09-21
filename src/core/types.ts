@@ -19,7 +19,7 @@ export const BRIDGE_CAPABILITIES = {
   safetyTiers: [...SAFETY_TIERS],
   nativeCancel: false,
   cancelMode: 'SIGINT_then_KILL',
-  historyReplay: false,
+  historyReplay: true,
   dynamicConfig: 'restart',
   richContentInput: 'degrade_to_files',
   richContentOutput: 'best_effort',

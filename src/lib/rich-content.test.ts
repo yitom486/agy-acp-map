@@ -46,10 +46,20 @@ describe('fileToAcpImageBlock', () => {
 
   test('skips missing / oversized', () => {
     expect(fileToAcpImageBlock('/no/such/file.png')).toBeNull();
-    const tmp = path.join(os.tmpdir(), `big-${Date.now()}.png`);
-    fs.writeFileSync(tmp, Buffer.alloc(3 * 1024 * 1024));
-    expect(fileToAcpImageBlock(tmp)).toBeNull();
-    fs.unlinkSync(tmp);
+    // Keep the oversized fixture on the repository volume. The default Windows
+    // temp volume can be full even when the project volume still has space.
+    const tmp = path.join(import.meta.dir, '..', '..', 'scratch', `big-${process.pid}-${Date.now()}.png`);
+    fs.mkdirSync(path.dirname(tmp), { recursive: true });
+    try {
+      fs.writeFileSync(tmp, Buffer.alloc(3 * 1024 * 1024));
+      expect(fileToAcpImageBlock(tmp)).toBeNull();
+    } finally {
+      try {
+        fs.unlinkSync(tmp);
+      } catch {
+        /* ignore cleanup failure */
+      }
+    }
   });
 
   test('reads file URI and returns a standard file URI', () => {

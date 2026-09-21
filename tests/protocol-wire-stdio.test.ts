@@ -10,11 +10,16 @@ const repoRoot = path.resolve(import.meta.dir, '..');
 describe('Wire-level Stdio JSON-RPC Integration (Full sdk-server Process)', () => {
   let activeHarness: SmokeHarness | null = null;
   let originalStore: string | undefined;
-  const testStoreWire = path.join(os.tmpdir(), `agy-acp-test-store-wire-${process.pid}-${Date.now()}.json`);
+  let originalHistory: string | undefined;
+  const testRootWire = path.join(repoRoot, 'scratch', `test-wire-${process.pid}-${Date.now()}`);
+  const testStoreWire = path.join(testRootWire, 'sessions.json');
+  const testHistoryWire = path.join(testRootWire, 'history');
 
   beforeAll(() => {
     originalStore = process.env.AGY_ACP_SESSION_STORE;
+    originalHistory = process.env.AGY_ACP_HISTORY_DIR;
     process.env.AGY_ACP_SESSION_STORE = testStoreWire;
+    process.env.AGY_ACP_HISTORY_DIR = testHistoryWire;
   });
 
   afterAll(() => {
@@ -23,8 +28,13 @@ describe('Wire-level Stdio JSON-RPC Integration (Full sdk-server Process)', () =
     } else {
       delete process.env.AGY_ACP_SESSION_STORE;
     }
+    if (originalHistory !== undefined) {
+      process.env.AGY_ACP_HISTORY_DIR = originalHistory;
+    } else {
+      delete process.env.AGY_ACP_HISTORY_DIR;
+    }
     try {
-      if (fs.existsSync(testStoreWire)) fs.unlinkSync(testStoreWire);
+      if (fs.existsSync(testRootWire)) fs.rmSync(testRootWire, { recursive: true, force: true });
     } catch {
       /* ignore */
     }
@@ -115,8 +125,8 @@ describe('Wire-level Stdio JSON-RPC Integration (Full sdk-server Process)', () =
       const firstUpdateIdx = sessionUpdates.findIndex((u) => u.sessionUpdate === 'tool_call_update');
       expect(firstCallIdx).toBeLessThan(firstUpdateIdx);
 
-      // Verify V1 capability honesty: loadSession is false, delete is supported
-      expect(initRes.agentCapabilities?.loadSession).toBe(false);
+      // V1 advertises standard session/load replay, plus session/delete support
+      expect(initRes.agentCapabilities?.loadSession).toBe(true);
       expect(initRes.agentCapabilities?.sessionCapabilities?.delete).toBeDefined();
 
       // 5. Delete session over stdio wire
@@ -190,6 +200,124 @@ describe('Wire-level Stdio JSON-RPC Integration (Full sdk-server Process)', () =
       // 5. Delete session over stdio wire
       const deleteRes = await harness.send('session/delete', { sessionId });
       expect(deleteRes).toEqual({});
+    },
+    30000,
+  );
+
+  test(
+    'V1 Wire History: session/load replays the JSONL display journal after reconnect',
+    async () => {
+      const first = createSmokeHarness({
+        tag: 'v1-history-create',
+        env: { AGY_BIN: mockCliPath, NODE_ENV: 'test' },
+      });
+      activeHarness = first;
+
+      await first.send('initialize', {
+        protocolVersion: 1,
+        capabilities: {},
+        info: { name: 'history-client', version: '0.1.0' },
+      });
+      const { sessionId } = await first.send('session/new', { cwd: repoRoot, mcpServers: [] });
+      const promptPromise = first.send('session/prompt', {
+        sessionId,
+        prompt: [{ type: 'text', text: 'Inspect files [test:tool]' }],
+      });
+      await first.waitIdle(15000, sessionId);
+      await promptPromise;
+      await first.send('session/close', { sessionId });
+      first.kill('SIGKILL');
+      activeHarness = null;
+
+      const second = createSmokeHarness({
+        tag: 'v1-history-load',
+        env: { AGY_BIN: mockCliPath, NODE_ENV: 'test' },
+      });
+      activeHarness = second;
+      await second.send('initialize', {
+        protocolVersion: 1,
+        capabilities: {},
+        info: { name: 'history-client', version: '0.1.0' },
+      });
+
+      const loaded = await second.send('session/load', {
+        sessionId,
+        cwd: repoRoot,
+        mcpServers: [],
+      });
+      expect(loaded.configOptions).toBeDefined();
+
+      const replayed = second.events
+        .filter((event) => event.subTag === 'notify')
+        .map((event) => event.obj?.params?.update)
+        .filter(Boolean);
+      expect(replayed.map((update) => update.sessionUpdate)).toEqual([
+        'user_message_chunk',
+        'agent_message_chunk',
+      ]);
+      expect(replayed[1].content.text).toContain('File read complete with success.');
+      expect(JSON.stringify(replayed)).not.toContain('package.json');
+
+      await second.send('session/delete', { sessionId });
+    },
+    30000,
+  );
+
+  test(
+    'V2 Wire History: session/resume replayFrom=start replays the JSONL display journal',
+    async () => {
+      const first = createSmokeHarness({
+        tag: 'v2-history-create',
+        env: { AGY_BIN: mockCliPath, NODE_ENV: 'test' },
+      });
+      activeHarness = first;
+
+      await first.send('initialize', {
+        protocolVersion: 2,
+        capabilities: {},
+        info: { name: 'history-client', version: '0.2.0' },
+      });
+      const { sessionId } = await first.send('session/new', { cwd: repoRoot, mcpServers: [] });
+      const promptPromise = first.send('session/prompt', {
+        sessionId,
+        prompt: [{ type: 'text', text: 'Inspect files [test:tool]' }],
+      });
+      await first.waitIdle(15000, sessionId);
+      await promptPromise;
+      await first.send('session/close', { sessionId });
+      first.kill('SIGKILL');
+      activeHarness = null;
+
+      const second = createSmokeHarness({
+        tag: 'v2-history-resume',
+        env: { AGY_BIN: mockCliPath, NODE_ENV: 'test' },
+      });
+      activeHarness = second;
+      await second.send('initialize', {
+        protocolVersion: 2,
+        capabilities: {},
+        info: { name: 'history-client', version: '0.2.0' },
+      });
+
+      const resumed = await second.send('session/resume', {
+        sessionId,
+        cwd: repoRoot,
+        mcpServers: [],
+        replayFrom: { type: 'start' },
+      });
+      expect(resumed.configOptions).toBeDefined();
+
+      const replayed = second.events
+        .filter((event) => event.subTag === 'notify')
+        .map((event) => event.obj?.params?.update)
+        .filter(Boolean);
+      expect(replayed.map((update) => update.sessionUpdate)).toEqual([
+        'user_message',
+        'agent_message',
+      ]);
+      expect(replayed[1].content[0].text).toContain('File read complete with success.');
+
+      await second.send('session/delete', { sessionId });
     },
     30000,
   );

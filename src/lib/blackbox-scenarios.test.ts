@@ -6,17 +6,35 @@ import { clearDiscoveryCache } from './agy-discovery.ts';
 
 describe('AgyAcpService Black-box Scenarios (Offline Simulation)', () => {
   let originalBin: string | undefined;
+  let originalStore: string | undefined;
+  let originalHistory: string | undefined;
   const mockCliPath = path.resolve(import.meta.dir, '../../tests/fixtures/mock-agy-cli.cjs');
   const testCwd = path.resolve(import.meta.dir, '../../');
+  const testRoot = path.resolve(import.meta.dir, '../../scratch', `test-blackbox-${process.pid}-${Date.now()}`);
+  const testStore = path.join(testRoot, 'sessions.json');
+  const testHistory = path.join(testRoot, 'history');
 
   beforeAll(() => {
     clearDiscoveryCache();
     originalBin = process.env.AGY_BIN;
+    originalStore = process.env.AGY_ACP_SESSION_STORE;
+    originalHistory = process.env.AGY_ACP_HISTORY_DIR;
     process.env.AGY_BIN = mockCliPath;
+    process.env.AGY_ACP_SESSION_STORE = testStore;
+    process.env.AGY_ACP_HISTORY_DIR = testHistory;
   });
 
   afterAll(() => {
     process.env.AGY_BIN = originalBin;
+    if (originalStore !== undefined) process.env.AGY_ACP_SESSION_STORE = originalStore;
+    else delete process.env.AGY_ACP_SESSION_STORE;
+    if (originalHistory !== undefined) process.env.AGY_ACP_HISTORY_DIR = originalHistory;
+    else delete process.env.AGY_ACP_HISTORY_DIR;
+    try {
+      fs.rmSync(testRoot, { recursive: true, force: true });
+    } catch {
+      /* ignore test cleanup failure */
+    }
     clearDiscoveryCache();
   });
 

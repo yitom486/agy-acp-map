@@ -16,15 +16,20 @@ const __dirname = path.dirname(__filename);
 describe('Simulated Integration Tests (Offline Mock CLI)', () => {
   let originalBin: string | undefined;
   let originalStore: string | undefined;
+  let originalHistory: string | undefined;
   const mockCliPath = path.resolve(__dirname, 'fixtures/mock-agy-cli.cjs');
   const testCwd = path.resolve(__dirname, '..');
-  const tmpStore = path.join(os.tmpdir(), `agy-acp-test-store-integration-${process.pid}-${Date.now()}.json`);
+  const testRoot = path.join(__dirname, '..', 'scratch', `test-integration-${process.pid}-${Date.now()}`);
+  const tmpStore = path.join(testRoot, 'sessions.json');
+  const tmpHistory = path.join(testRoot, 'history');
 
   beforeAll(() => {
     originalBin = process.env.AGY_BIN;
     originalStore = process.env.AGY_ACP_SESSION_STORE;
+    originalHistory = process.env.AGY_ACP_HISTORY_DIR;
     process.env.AGY_BIN = mockCliPath;
     process.env.AGY_ACP_SESSION_STORE = tmpStore;
+    process.env.AGY_ACP_HISTORY_DIR = tmpHistory;
     setCachedDiscoveryForTest({
       availableModels: ['gemini-3.8-flash-high', 'gemini-3.8-pro'],
       availableAgents: ['coder', 'architect'],
@@ -38,9 +43,14 @@ describe('Simulated Integration Tests (Offline Mock CLI)', () => {
     } else {
       delete process.env.AGY_ACP_SESSION_STORE;
     }
+    if (originalHistory !== undefined) {
+      process.env.AGY_ACP_HISTORY_DIR = originalHistory;
+    } else {
+      delete process.env.AGY_ACP_HISTORY_DIR;
+    }
     clearDiscoveryCache();
     try {
-      if (fs.existsSync(tmpStore)) fs.unlinkSync(tmpStore);
+      if (fs.existsSync(testRoot)) fs.rmSync(testRoot, { recursive: true, force: true });
     } catch {
       /* ignore */
     }
@@ -55,7 +65,7 @@ describe('Simulated Integration Tests (Offline Mock CLI)', () => {
       // Official ACP V1 Schema compliance
       expect(res.protocolVersion).toBe(1);
       expect(res.agentInfo.name).toBe(AGENT_INFO.name);
-      expect(res.agentCapabilities.loadSession).toBe(false);
+      expect(res.agentCapabilities.loadSession).toBe(true);
       expect(res.agentCapabilities.sessionCapabilities.delete).toBeDefined();
       expect(res.agentCapabilities.sessionCapabilities.resume).toBeDefined();
 
@@ -154,6 +164,44 @@ describe('Simulated Integration Tests (Offline Mock CLI)', () => {
 
       await v1Service.closeSession({ sessionId });
     });
+
+    test('V1 session/load replays only user and final assistant text from JSONL history', async () => {
+      const core = new AgySessionCore();
+      const v1Service = new AgyAcpV1Service(core);
+      const { sessionId } = await v1Service.newSession({ cwd: testCwd });
+
+      await v1Service.promptSession(
+        {
+          sessionId,
+          prompt: [{ type: 'text', text: 'Read test file [test:tool]' }],
+        },
+        () => {},
+      );
+
+      const stored = core.historyStore.read(sessionId);
+      expect(stored.map((record) => record.role)).toEqual(['user', 'assistant']);
+      expect(stored[1].text).toContain('File read complete with success.');
+      expect(JSON.stringify(stored)).not.toContain('package.json');
+
+      await v1Service.closeSession({ sessionId });
+
+      const replayed: any[] = [];
+      await v1Service.loadSession(
+        { sessionId, cwd: testCwd, mcpServers: [] },
+        (update) => {
+          replayed.push(update);
+        },
+      );
+
+      expect(replayed.map((update) => update.sessionUpdate)).toEqual([
+        'user_message_chunk',
+        'agent_message_chunk',
+      ]);
+      expect(replayed[0].content.text).toContain('Read test file');
+      expect(replayed[1].content.text).toContain('File read complete with success.');
+
+      await v1Service.deleteSession({ sessionId });
+    });
   });
 
   describe('ACP V2 Wire-level Conformance', () => {
@@ -217,6 +265,38 @@ describe('Simulated Integration Tests (Offline Mock CLI)', () => {
       expect(updates.some((u) => u.sessionUpdate === 'user_message')).toBe(true);
 
       await v2Service.closeSession({ sessionId });
+    });
+
+    test('V2 session/resume replayFrom=start replays JSONL display history without tools', async () => {
+      const core = new AgySessionCore();
+      const v2Service = new AgyAcpV2Service(core);
+      const { sessionId } = await v2Service.newSession({ cwd: testCwd });
+
+      await v2Service.promptSession(
+        {
+          sessionId,
+          prompt: [{ type: 'text', text: 'Read test file [test:tool]' }],
+        },
+        () => {},
+      );
+      await v2Service.closeSession({ sessionId });
+
+      const replayed: any[] = [];
+      await v2Service.resumeSession(
+        { sessionId, cwd: testCwd, mcpServers: [], replayFrom: { type: 'start' } },
+        (update) => {
+          replayed.push(update);
+        },
+      );
+
+      expect(replayed.map((update) => update.sessionUpdate)).toEqual([
+        'user_message',
+        'agent_message',
+      ]);
+      expect(replayed[0].content[0].text).toContain('Read test file');
+      expect(replayed[1].content[0].text).toContain('File read complete with success.');
+
+      await v2Service.deleteSession({ sessionId });
     });
 
     test('V2 promptSession error path guarantees state_update: idle notification', async () => {
@@ -540,7 +620,7 @@ describe('Simulated Integration Tests (Offline Mock CLI)', () => {
       // Unsupported replayFrom rejected
       await expect(
         v1Service.resumeSession({ sessionId, cwd: testCwd, replayFrom: { type: 'start' } }),
-      ).rejects.toThrow(/replayFrom is not supported/);
+      ).rejects.toThrow(/replayFrom is only supported by ACP v2/);
 
       // Non-empty mcpServers rejected
       await expect(
@@ -605,4 +685,3 @@ describe('Simulated Integration Tests (Offline Mock CLI)', () => {
     });
   });
 });
-

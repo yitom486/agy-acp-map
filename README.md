@@ -29,10 +29,11 @@ ACP Client  ←stdio JSON-RPC NDJSON→  src/server.ts  ←stdin/stdout stream-j
 
 - **No SQLite / no `~/.agy` DB reads**: never opens agy conversation stores.
 - **Lightweight SessionStore** (`~/.agy-acp-map/sessions.json`): ACP `sessionId` ↔ agy `conversationId` + launch snapshot only. **Not** a transcript DB.
-- **Client owns transcript** (e.g. zustand / gateway UI). Bridge advertises `historyReplay: false`.
+- **Small display-history journal** (`~/.agy-acp-map/history/<sessionId>.jsonl`, or `AGY_ACP_HISTORY_DIR`): stores only the visible user prompt and final assistant text. Tool calls, tool output, thoughts, images, and raw NDJSON are excluded.
+- **Client owns the live transcript** (e.g. zustand / gateway UI); the JSONL journal is only a restart/reload fallback. Bridge advertises `historyReplay: true`.
 - **No Zed / Antigravity plugin code**.
 - **Persistent stdin stream-json** (same child across turns until cancel/config change).
-- **Resume:** `session/resume` rehydrates from memory or disk; next prompt respawns with `--conversation <id>` + saved flags. No history replay via `session/update`.
+- **Resume:** `session/resume` rehydrates from memory or disk; next prompt respawns with `--conversation <id>` + saved flags. v1 `session/load` and v2 `session/resume` with `replayFrom: {"type":"start"}` replay the small JSONL display journal.
 
 ## Requirements / 环境
 
@@ -103,10 +104,12 @@ Invalid model / effort values fail **loud** at agy spawn (stderr + turn ends); t
 
 **What is NOT stored / 不存什么**
 
-- Messages, tool traces, NDJSON event logs, images, or any full transcript
-- Client UI state — **zustand / ACP Client owns the transcript**
+- agy's canonical transcript, tool traces, NDJSON event logs, images, or thought/reasoning events
+- Any tool output or internal state; **the journal is display history, not a second agy context database**
+- Client UI state — **zustand / ACP Client owns the live transcript**
 
 Default path: `~/.agy-acp-map/sessions.json`. Override with `AGY_ACP_STORE` or `AGY_ACP_SESSION_STORE`.
+Display-history path: `~/.agy-acp-map/history/`. Override with `AGY_ACP_HISTORY_DIR`.
 
 默认路径：`~/.agy-acp-map/sessions.json`；可用 `AGY_ACP_STORE` / `AGY_ACP_SESSION_STORE` 覆盖。
 
@@ -115,10 +118,10 @@ Default path: `~/.agy-acp-map/sessions.json`. Override with `AGY_ACP_STORE` or `
 | | `session/resume` (this bridge) | History load / replay |
 |--|-------------------------------|------------------------|
 | Purpose | Re-attach ACP `sessionId` → memory + spawn with `--conversation` | Stream past turns into UI |
-| Bridge behavior | Rehydrate id/config from memory or **disk store**; **no** `session/update` history | **Not implemented** (`historyReplay: false`) |
-| Who has messages | Client already has them (or reloads from its own store) | Would be Agent → Client replay |
+| Bridge behavior | Rehydrate id/config from memory or **disk store**; replay only when explicitly requested | v1 `session/load`, or v2 `session/resume` with `replayFrom: {"type":"start"}` |
+| Who has messages | Client already has them (or reloads from its own store) | Bridge replays visible text from its JSONL journal |
 
-中文：`session/resume` 只恢复 id/配置映射并在下次 prompt 带 `--conversation` 拉起 agy；**不会**通过 `session/update` 重放历史。完整对话记录由 Client（如 zustand）持有。不实现 `session/load` 式 history replay。
+中文：`session/resume` 默认只恢复 id/配置映射并在下次 prompt 带 `--conversation` 继续 agy 的真实上下文；只有 v1 `session/load` 或 v2 `replayFrom: {"type":"start"}` 才会通过 `session/update` 重放 JSONL 中的用户文本和最终输出。它不是 agy 内部对话数据库的替代品。
 
 ### Resume & dynamic config / 恢复与动态配置
 
@@ -134,7 +137,7 @@ Default path: `~/.agy-acp-map/sessions.json`. Override with `AGY_ACP_STORE` or `
    ```
    Updates session fields, kills lingering child; **next** `session/prompt` respawns with new flags + `--conversation`. When busy → error `-32002`.
 
-`bridgeCapabilities.dynamicConfig: "restart"` · `resume: true` · `historyReplay: false`.
+`bridgeCapabilities.dynamicConfig: "restart"` · `resume: true` · `historyReplay: true`.
 
 ## Env / 环境变量
 
@@ -153,6 +156,7 @@ Default path: `~/.agy-acp-map/sessions.json`. Override with `AGY_ACP_STORE` or `
 | `AGY_ACP_JSON_SCHEMA` | — | Schema string or file path for `--json-schema` |
 | `AGY_ACP_KEEP_STAGING` | — | `1` → keep `.agy-acp-staging` files after turn/close (debug) |
 | `AGY_ACP_STORE` / `AGY_ACP_SESSION_STORE` | `~/.agy-acp-map/sessions.json` | Disk session index path (`SESSION_STORE` wins if both set) |
+| `AGY_ACP_HISTORY_DIR` | `~/.agy-acp-map/history` | JSONL display-history directory; one `<sessionId>.jsonl` file per session |
 | `AGY_ACP_DELETE_ON_CLOSE` | unset | `1`/`true` → also delete store row on `session/close` (default: **keep** disk for resume) |
 
 ## `initialize` → bridgeCapabilities
@@ -170,7 +174,7 @@ Returned alongside standard ACP fields (also under `_meta.bridgeCapabilities`):
 | `safetyTiers` | `[safe, autonomous, autonomous-unsandboxed]` | See Safety modes table |
 | `nativeCancel` | `false` | |
 | `cancelMode` | `SIGINT_then_KILL` | |
-| `historyReplay` | `false` | No Agent→Client history replay; Client owns transcript |
+| `historyReplay` | `true` | Replays only user prompts and final assistant text from the JSONL display journal |
 | `dynamicConfig` | `restart` | `session/new` + idle `set_config_option` / close+new |
 | `richContentInput` | `degrade_to_files` | Images → `.agy-acp-staging/` + text path |
 | `richContentOutput` | `best_effort` | Detect paths; inline base64 ≤2MB |
@@ -268,21 +272,21 @@ See also `docs/AGY_ACP_MAP_ANALYSIS.zh-CN.md` (analysis kept; P0 items addressed
 | `session/list` | Union of memory + disk; **memory wins** on same `sessionId` |
 | `session/resume` | Memory hit → existing behavior; disk-only → rehydrate Session (no child); unknown → JSON-RPC `-32001` |
 | `session/close` | Kill child, drop memory; **keep** disk row (unless `AGY_ACP_DELETE_ON_CLOSE=1`) |
-| History | Never emits past turns on resume |
+| History | `session/load` (v1) and `session/resume` + `replayFrom: {"type":"start"}` (v2) emit JSONL display history |
 
 ## Non-goals / 明确不做
 
 - **OneShot `-p` backend**: not planned. Continuous ACP sessions use persistent `stream-json` only. Use the `agy` CLI directly for one-off CI/`-p` scripts.
 - **OneShot `-p` 后端**：不做。ACP 连续会话只走常驻 `stream-json`；一次性脚本请直接用 `agy -p`。
 - **Interactive ACP permission round-trip**：CLI stream-json 不支持；用 safety 三档 + settings allow。
-- **History replay / `session/load` 重放**：不把全文存 bridge；Client（zustand/Zed）自管 transcript，bridge 只做 id 级 `resume`。
+- **Full agy transcript export**：agy CLI does not expose a supported export API. The bridge only keeps a minimal visible-text JSONL journal; it does not attempt to reconstruct tool/thought history.
 
 ## Limitations / 限制
 
 - MCP servers from `session/new` ignored (agy has its own).
 - No ACP permission round-trip UI (`permissionRoundTrip: false`).
 - Cancel = SIGINT then SIGKILL (no mid-turn stream cancel API).
-- No history replay (`historyReplay: false`). Client / zustand owns transcript; store is id+config only.
+- History replay is intentionally minimal: no tool results, thoughts, images, partial replay cursors, or forked-session transcript reconstruction. Client / zustand still owns the live transcript; agy remains the source of model context.
 - Image input depends on agy `view_file` / vision actually reading the staged path.
 - Image output inlining is best-effort (path detection + 2MB cap); `generate_image` may be slow or gated.
 - `usage_update.size` is a soft floor (200k).

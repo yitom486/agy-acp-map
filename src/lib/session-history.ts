@@ -1,0 +1,148 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+
+/**
+ * Small, display-oriented history journal.
+ *
+ * This is intentionally not a copy of agy's internal conversation database. It
+ * only stores the text that an ACP client can display: user prompts and final
+ * assistant text. Tool calls, tool output, thoughts, and internal events are
+ * deliberately excluded.
+ */
+export type SessionHistoryRole = 'user' | 'assistant';
+
+export type SessionHistoryRecord = {
+  version: 1;
+  sessionId: string;
+  messageId: string;
+  role: SessionHistoryRole;
+  text: string;
+  createdAt: string;
+};
+
+export function resolveHistoryDir(
+  sessionStorePath?: string,
+  env: NodeJS.ProcessEnv = process.env,
+  homedir: () => string = () => os.homedir(),
+): string {
+  const configured = (env.AGY_ACP_HISTORY_DIR || '').trim();
+  if (configured) return path.resolve(configured);
+
+  if (sessionStorePath) {
+    return path.join(path.dirname(path.resolve(sessionStorePath)), 'history');
+  }
+
+  return path.join(homedir(), '.agy-acp-map', 'history');
+}
+
+function historyFileName(sessionId: string): string {
+  if (!sessionId || typeof sessionId !== 'string') {
+    throw new Error('sessionId is required for history');
+  }
+
+  // ACP session IDs are opaque. Encoding the filename prevents path traversal
+  // while leaving UUID-style IDs readable as filenames.
+  return `${encodeURIComponent(sessionId)}.jsonl`;
+}
+
+function isRecord(value: unknown): value is SessionHistoryRecord {
+  if (!value || typeof value !== 'object') return false;
+  const item = value as Record<string, unknown>;
+  return (
+    item.version === 1 &&
+    typeof item.sessionId === 'string' &&
+    typeof item.messageId === 'string' &&
+    (item.role === 'user' || item.role === 'assistant') &&
+    typeof item.text === 'string' &&
+    typeof item.createdAt === 'string'
+  );
+}
+
+export class SessionHistoryStore {
+  readonly directory: string;
+
+  constructor(directory?: string) {
+    this.directory = path.resolve(directory || resolveHistoryDir());
+  }
+
+  filePath(sessionId: string): string {
+    return path.join(this.directory, historyFileName(sessionId));
+  }
+
+  /**
+   * Append one completed turn as two JSONL records.
+   *
+   * The assistant record is omitted when the turn produced no visible final
+   * text. This keeps cancelled/error-only turns from becoming fake answers.
+   */
+  appendTurn(sessionId: string, userText: string, assistantText?: string): void {
+    const records: SessionHistoryRecord[] = [];
+    const now = new Date().toISOString();
+
+    if (userText) {
+      records.push({
+        version: 1,
+        sessionId,
+        messageId: `history_user_${randomUUID()}`,
+        role: 'user',
+        text: userText,
+        createdAt: now,
+      });
+    }
+
+    if (assistantText && assistantText.trim()) {
+      records.push({
+        version: 1,
+        sessionId,
+        messageId: `history_agent_${randomUUID()}`,
+        role: 'assistant',
+        text: assistantText,
+        createdAt: new Date().toISOString(),
+      });
+    }
+
+    if (!records.length) return;
+
+    fs.mkdirSync(this.directory, { recursive: true });
+    const payload = records.map((record) => JSON.stringify(record)).join('\n') + '\n';
+    fs.appendFileSync(this.filePath(sessionId), payload, 'utf8');
+  }
+
+  /** Read valid records and ignore incomplete/corrupt trailing lines. */
+  read(sessionId: string): SessionHistoryRecord[] {
+    const file = this.filePath(sessionId);
+    if (!fs.existsSync(file)) return [];
+
+    let raw: string;
+    try {
+      raw = fs.readFileSync(file, 'utf8');
+    } catch {
+      return [];
+    }
+
+    const records: SessionHistoryRecord[] = [];
+    for (const line of raw.split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      try {
+        const parsed = JSON.parse(line);
+        if (isRecord(parsed) && parsed.sessionId === sessionId) {
+          records.push(parsed);
+        }
+      } catch {
+        // A partially written final line must not make the whole history unusable.
+      }
+    }
+    return records;
+  }
+
+  delete(sessionId: string): void {
+    const file = this.filePath(sessionId);
+    try {
+      if (fs.existsSync(file)) fs.unlinkSync(file);
+    } catch (err) {
+      console.warn(`[ACP-HISTORY] Warning: failed to delete ${file}:`, err);
+    }
+  }
+}

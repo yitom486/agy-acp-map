@@ -37,6 +37,10 @@ import {
   deleteOnCloseEnabled,
 } from '../lib/session-store.ts';
 import {
+  SessionHistoryStore,
+  resolveHistoryDir,
+} from '../lib/session-history.ts';
+import {
   type SdkSession,
   type ProtocolVersion,
   catalogChoices,
@@ -45,11 +49,13 @@ import {
 
 export interface SessionCoreOptions {
   sessionStore?: SessionStore | string;
+  historyStore?: SessionHistoryStore | string;
 }
 
 export class AgySessionCore {
   readonly sessions = new Map<string, SdkSession>();
   readonly sessionStore: SessionStore;
+  readonly historyStore: SessionHistoryStore;
   private catalogPromise: Promise<DiscoveryResult> | null = null;
 
   constructor(options?: SessionCoreOptions) {
@@ -59,6 +65,14 @@ export class AgySessionCore {
       this.sessionStore = new SessionStore(options.sessionStore);
     } else {
       this.sessionStore = new SessionStore();
+    }
+
+    if (options?.historyStore instanceof SessionHistoryStore) {
+      this.historyStore = options.historyStore;
+    } else if (typeof options?.historyStore === 'string') {
+      this.historyStore = new SessionHistoryStore(options.historyStore);
+    } else {
+      this.historyStore = new SessionHistoryStore(resolveHistoryDir(this.sessionStore.filePath));
     }
   }
 
@@ -78,6 +92,48 @@ export class AgySessionCore {
     } catch (err) {
       console.warn(`[ACP-STORE] Warning: failed to persist session ${session?.sessionId}:`, err);
       if (opts?.throwOnError) throw err;
+    }
+  }
+
+  persistTurnHistory(
+    sessionId: string,
+    userText: string,
+    assistantText: string,
+    stopReason: string,
+    eligible = true,
+  ): void {
+    try {
+      this.historyStore.appendTurn(
+        sessionId,
+        userText,
+        eligible && stopReason !== 'cancelled' ? assistantText : undefined,
+      );
+    } catch (err) {
+      // History is a display cache. A write failure must never break the ACP turn.
+      console.warn(`[ACP-HISTORY] Warning: failed to persist turn ${sessionId}:`, err);
+    }
+  }
+
+  async replayHistory(
+    sessionId: string,
+    protocolVersion: ProtocolVersion,
+    notifyClient: (update: any) => Promise<void> | void,
+  ): Promise<void> {
+    const records = this.historyStore.read(sessionId);
+    for (const record of records) {
+      if (protocolVersion === 1) {
+        await notifyClient({
+          sessionUpdate: record.role === 'user' ? 'user_message_chunk' : 'agent_message_chunk',
+          messageId: record.messageId,
+          content: { type: 'text', text: record.text },
+        });
+      } else {
+        await notifyClient({
+          sessionUpdate: record.role === 'user' ? 'user_message' : 'agent_message',
+          messageId: record.messageId,
+          content: [{ type: 'text', text: record.text }],
+        });
+      }
     }
   }
 
@@ -206,7 +262,14 @@ export class AgySessionCore {
     }
 
     if (params?.replayFrom !== undefined && params?.replayFrom !== null) {
-      throw new RequestError(-32602, 'session/resume with replayFrom is not supported by this agent');
+      if (protocolVersion !== 2 || params.replayFrom?.type !== 'start') {
+        throw new RequestError(
+          -32602,
+          protocolVersion === 2
+            ? 'only replayFrom.type="start" is supported by this agent'
+            : 'session/resume with replayFrom is only supported by ACP v2',
+        );
+      }
     }
 
     if (params?.mcpServers !== undefined) {
@@ -511,6 +574,7 @@ export class AgySessionCore {
     }
 
     this.sessionStore.delete(sessionId);
+    this.historyStore.delete(sessionId);
     return {};
   }
 
@@ -528,6 +592,7 @@ export class AgySessionCore {
 
     if (deleteOnCloseEnabled()) {
       this.sessionStore.delete(sessionId);
+      this.historyStore.delete(sessionId);
     }
     return {};
   }
@@ -595,6 +660,25 @@ export class AgySessionCore {
     );
 
     const messageId = `msg_user_${randomUUID().slice(0, 8)}`;
+    let visibleAssistantText = '';
+    let historyTurnEligible = true;
+
+    const captureVisibleAssistantText = (update: any) => {
+      if (update?.sessionUpdate !== 'agent_message_chunk' && update?.sessionUpdate !== 'agent_message') {
+        return;
+      }
+      const content = update.content;
+      if (content?.type === 'text' && typeof content.text === 'string') {
+        visibleAssistantText += content.text;
+      } else if (Array.isArray(content)) {
+        for (const block of content) {
+          if (block?.type === 'text' && typeof block.text === 'string') {
+            visibleAssistantText += block.text;
+          }
+        }
+      }
+    };
+
     queue.enqueue(async () => {
       await notifyClient({
         sessionUpdate: 'user_message',
@@ -624,6 +708,7 @@ export class AgySessionCore {
             session.softDenyEmitted = true;
             const msg = formatSoftDenyMessage(session.softDenies);
             if (msg) {
+              visibleAssistantText += '\n\n' + msg;
               await notifyClient({
                 sessionUpdate: 'agent_message_chunk',
                 messageId: `msg_agent_soft_deny_${Date.now()}`,
@@ -632,6 +717,13 @@ export class AgySessionCore {
             }
           }
 
+          this.persistTurnHistory(
+            sessionId,
+            text,
+            visibleAssistantText,
+            stopReason,
+            historyTurnEligible,
+          );
           this.persistSession(session);
 
           // Auto-clean turn staged files unless explicitly requested to keep
@@ -657,6 +749,13 @@ export class AgySessionCore {
             session.softDenies = mergeSoftDenies(session.softDenies, fromEvt);
           }
 
+          if (event?.event === 'result') {
+            const status = String(event?.result?.status || '').toUpperCase();
+            if (status && status !== 'SUCCESS' && status !== 'OK') {
+              historyTurnEligible = false;
+            }
+          }
+
           const { notifications, state } = mapAgyEvent(session.sessionId, event, session.mapper);
           session.mapper = state;
           if (state.conversationId && state.conversationId !== session.conversationId) {
@@ -667,6 +766,7 @@ export class AgySessionCore {
           for (const n of notifications) {
             const u = n.params?.update as any;
             if (u) {
+              captureVisibleAssistantText(u);
               if (u.sessionUpdate === 'state_update' && u.state === 'idle') {
                 finish(u.stopReason || 'end_turn');
                 return;
@@ -679,6 +779,7 @@ export class AgySessionCore {
 
       const onError = (err: Error) => {
         console.error(`[ACP-SDK] onError (sid: ${sessionId}):`, err.message);
+        historyTurnEligible = false;
         queue.enqueue(async () => {
           if (session.deleted || !this.sessions.has(sessionId)) return;
           await notifyClient({

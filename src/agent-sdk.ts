@@ -59,9 +59,21 @@ export class AgyAcpService {
     return version === 2 ? this.v2.newSession(params) : this.v1.newSession(params);
   }
 
-  async resumeSession(params: any): Promise<any> {
+  async resumeSession(
+    params: any,
+    notifyClient?: (update: any) => Promise<void> | void,
+  ): Promise<any> {
     const version: ProtocolVersion = params?.protocolVersion === 2 ? 2 : 1;
-    return version === 2 ? this.v2.resumeSession(params) : this.v1.resumeSession(params);
+    return version === 2
+      ? this.v2.resumeSession(params, notifyClient)
+      : this.v1.resumeSession(params);
+  }
+
+  async loadSession(
+    params: any,
+    notifyClient: (update: any) => Promise<void> | void,
+  ): Promise<any> {
+    return this.v1.loadSession(params, notifyClient);
   }
 
   async setConfigOption(params: any): Promise<any> {

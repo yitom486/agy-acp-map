@@ -47,6 +47,18 @@ export class AgyAcpV1Service {
     };
   }
 
+  async loadSession(
+    params: any,
+    notifyClient: (update: any) => Promise<void> | void,
+  ): Promise<any> {
+    const { session, discovery, meta } = await this.core.resumeSession(params, 1);
+    await this.core.replayHistory(session.sessionId, 1, notifyClient);
+    return {
+      configOptions: buildV1ConfigOptions(discovery, session),
+      ...(meta ? { _meta: meta } : {}),
+    };
+  }
+
   async setConfigOption(params: any): Promise<any> {
     const { configOptions, meta } = await this.core.updateConfigOption(params, 1, buildV1ConfigOptions);
     return {

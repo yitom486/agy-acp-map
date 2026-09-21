@@ -1,5 +1,5 @@
 export const V1_AGENT_CAPABILITIES = {
-  loadSession: false,
+  loadSession: true,
   sessionCapabilities: {
     list: {},
     resume: {},

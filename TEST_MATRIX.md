@@ -15,7 +15,8 @@ Honest pass/fail. Live tests need logged-in `agy` on PATH.
 | U7 | Legacy script parity | `bun src/test-agy-args.ts` | PASS |
 | U8 | **Process manager** generation / error / kill | `bun test src/lib/agy-process.test.ts` | PASS |
 | U9 | **Path allowlist** allow/deny/relative/staging/add-dir | `bun test src/lib/path-allowlist.test.ts` | PASS |
-| U10 | **SessionStore** CRUD / atomic write / path env / resume seed (no history) | `bun test src/lib/session-store.test.ts` | PASS |
+| U10 | **SessionStore** CRUD / atomic write / path env / resume seed | `bun test src/lib/session-store.test.ts` | PASS |
+| U11 | **SessionHistoryStore** JSONL user/final-assistant records, corruption tolerance, delete isolation | `bun test src/lib/session-history.test.ts` | PASS |
 
 ## Integration / smoke (live agy)
 
@@ -54,6 +55,6 @@ If `agy` returns `RESOURCE_EXHAUSTED` / 429, treat spawn-flag verification + uni
 
 - Store path default `~/.agy-acp-map/sessions.json`; override `AGY_ACP_STORE` / `AGY_ACP_SESSION_STORE`
 - `session/list` memory∪disk (memory wins); `session/resume` rehydrate from disk; close keeps disk unless `AGY_ACP_DELETE_ON_CLOSE=1`
-- `historyReplay: false` — unit coverage asserts no transcript fields on records; resume seed feeds `buildAgyArgs(--conversation)` only
+- `historyReplay: true` — JSONL replay stores only visible user/final-assistant text; resume seed still feeds `buildAgyArgs(--conversation)` for agy's actual context
 - Live smoke for resume-after-restart optional (quota); U10 covers offline path
 
