@@ -1,3 +1,18 @@
+## v0.1.5 — Zed-verified minimal initialize, single-file exe, file logging (2026-09-22)
+
+### Fixed
+- **Zed handshake**: `initialize` now returns a minimal Zed-verified shape (`protocolVersion`, `agentInfo{name,version}`, `agentCapabilities{loadSession,sessionCapabilities{close,list,resume}}`, `authMethods: []`); models arrive via `session/new` `configOptions` so the Zed model picker keeps working. Verified end-to-end in Zed 1.20.2 (initialize → session/new → prompt).
+- **Unit test isolation**: `agent-sdk.test.ts` disables connect-time warm-up (`AGY_ACP_WARMUP=0`) so unit tests never spawn the real `agy` (was slow/flaky without an `AGY_BIN` mock).
+
+### Added
+- **Single-file Windows exe**: `bun run build:exe` compiles `dist/agy-acp-win-x64.exe` (codex-style, no Bun/TS at runtime); `acp-studio` preset uses it strictly (missing exe fails fast with a build hint instead of falling back to TS).
+- **Headless lookup from compiled exe**: `findHeadlessLauncher` also checks the exe-adjacent directory so `agy` children keep `CREATE_NO_WINDOW` when running from the single file or a global npm install.
+- **File logging**: append-only `%TEMP%/agy-acp.log` (`AGY_ACP_LOG` override, ~1MB rotation) recording startup, `initialize`, `session/new`, stdin close and fatal errors — Zed hides `stderr`, the file log does not.
+- **Docs**: `README` gained a “Zed via npm (global install)” section with zero-flash and fallback configs plus `exit code: 0` troubleshooting.
+- **Hygiene**: `*.bun-build` (Bun `--compile` temp files) added to `.gitignore`.
+
+---
+
 ## v0.1.4 — connect-time warmup, real quota windows, Windows headless build matrix (2026-09-22)
 
 ### Added

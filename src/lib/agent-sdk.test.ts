@@ -7,6 +7,7 @@ import { setCachedDiscoveryForTest, clearDiscoveryCache } from './agy-discovery.
 describe('AgyAcpService & SDK Agent', () => {
   let originalStore: string | undefined;
   let originalHistory: string | undefined;
+  let originalWarmup: string | undefined;
   const tmpStore = path.resolve(import.meta.dir, `../../scratch/test-store-agent-sdk-${process.pid}-${Date.now()}.json`);
   const tmpHistory = path.resolve(import.meta.dir, `../../scratch/test-history-agent-sdk-${process.pid}-${Date.now()}`);
 
@@ -15,6 +16,11 @@ describe('AgyAcpService & SDK Agent', () => {
     originalHistory = process.env.AGY_ACP_HISTORY_DIR;
     process.env.AGY_ACP_SESSION_STORE = tmpStore;
     process.env.AGY_ACP_HISTORY_DIR = tmpHistory;
+    // No AGY_BIN mock here: disable connect-time warm-up so unit tests never
+    // spawn the real agy (slow + flaky). Warm-up itself is covered by
+    // blackbox-scenarios / protocol-integration with the mock CLI.
+    originalWarmup = process.env.AGY_ACP_WARMUP;
+    process.env.AGY_ACP_WARMUP = '0';
     setCachedDiscoveryForTest({
       availableModels: ['gemini-3.8-flash-high', 'gemini-3.8-flash-low'],
       availableAgents: ['coder', 'architect'],
@@ -22,6 +28,11 @@ describe('AgyAcpService & SDK Agent', () => {
   });
 
   afterAll(() => {
+    if (originalWarmup !== undefined) {
+      process.env.AGY_ACP_WARMUP = originalWarmup;
+    } else {
+      delete process.env.AGY_ACP_WARMUP;
+    }
     if (originalStore !== undefined) {
       process.env.AGY_ACP_SESSION_STORE = originalStore;
     } else {
@@ -41,15 +52,13 @@ describe('AgyAcpService & SDK Agent', () => {
     }
   });
 
-  test('initialize returns catalog metadata without leaking non-standard protocol fields', async () => {
+  test('initialize returns minimal Zed-verified shape without leaking non-standard protocol fields', async () => {
     const service = new AgyAcpService();
     const res = await service.initialize();
     expect(res.agentInfo.name).toBe(AGENT_INFO.name);
-    expect(res._meta.bridgeCapabilities.streaming).toBe(true);
-    expect(res._meta.bridgeCapabilities.tools).toBe(true);
-    expect(res._meta.bridgeCapabilities.resume).toBe(true);
-    expect(res._meta.availableModels).toContain('gemini-3.8-flash-high');
-    expect(res._meta.availableAgents).toContain('coder');
+    // Minimal shape: no _meta on initialize; authMethods must be an array.
+    expect((res as any)._meta).toBeUndefined();
+    expect(Array.isArray(res.authMethods)).toBe(true);
     expect((res as any).bridgeCapabilities).toBeUndefined();
     expect((res as any).availableModels).toBeUndefined();
 
@@ -57,7 +66,8 @@ describe('AgyAcpService & SDK Agent', () => {
     expect(v1.protocolVersion).toBe(1);
     expect(v1.agentCapabilities.loadSession).toBe(true);
     expect(v1.agentCapabilities.sessionCapabilities.resume).toEqual({});
-    expect(v1.agentCapabilities.sessionCapabilities.delete).toEqual({});
+    expect(v1.agentCapabilities.sessionCapabilities.close).toEqual({});
+    expect(Array.isArray(v1.authMethods)).toBe(true);
     expect((v1 as any).capabilities).toBeUndefined();
 
     const v2 = await service.initializeV2();

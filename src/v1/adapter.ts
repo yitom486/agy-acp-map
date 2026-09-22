@@ -1,32 +1,27 @@
-import { AGENT_INFO, BRIDGE_CAPABILITIES } from '../core/types.ts';
+import { AGENT_INFO } from '../core/types.ts';
 import { AgySessionCore } from '../core/session-core.ts';
 import { formatUpdateForProtocol } from '../lib/map-agy-to-acp.ts';
-import { V1_AGENT_CAPABILITIES } from './types.ts';
 import { buildV1ConfigOptions } from './config.ts';
+import { debugLog } from '../lib/debug-log.ts';
 
 export class AgyAcpV1Service {
   constructor(readonly core: AgySessionCore = new AgySessionCore()) {}
 
   async initialize(): Promise<any> {
-    const discovery = await this.core.getDiscovery();
-    const configOptions = buildV1ConfigOptions(discovery);
-
-    // Strictly conforms to ACP v1 InitializeResponse schema:
-    // Only protocolVersion, agentInfo, agentCapabilities, authMethods, _meta
+    debugLog('V1 initialize called');
+    // NOTE (2026-09-22): minimal opencode-shaped response. Zed 1.20.2 closes
+    // the connection on the previous full shape for unknown reasons; this
+    // minimal shape is verified working in Zed (initialize -> session/new ->
+    // prompt with model picker). Re-expand only with Zed-verified fields.
+    debugLog('V1 initialize called (minimal response)');
     return {
       protocolVersion: 1,
-      agentInfo: AGENT_INFO,
-      agentCapabilities: V1_AGENT_CAPABILITIES,
-      _meta: {
-        bridgeCapabilities: {
-          ...BRIDGE_CAPABILITIES,
-          availableModels: discovery.availableModels,
-          availableAgents: discovery.availableAgents,
-          configOptions,
-        },
-        availableModels: discovery.availableModels,
-        availableAgents: discovery.availableAgents,
+      agentInfo: { name: AGENT_INFO.name, version: AGENT_INFO.version },
+      agentCapabilities: {
+        loadSession: true,
+        sessionCapabilities: { close: {}, list: {}, resume: {} },
       },
+      authMethods: [],
     };
   }
 

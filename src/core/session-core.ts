@@ -46,6 +46,7 @@ import {
   catalogChoices,
   AsyncSerialQueue,
 } from './types.ts';
+import { debugLog } from '../lib/debug-log.ts';
 
 export interface SessionCoreOptions {
   sessionStore?: SessionStore | string;
@@ -275,6 +276,7 @@ export class AgySessionCore {
     protocolVersion: ProtocolVersion = 1,
   ): Promise<{ session: SdkSession; discovery: DiscoveryResult; meta?: Record<string, unknown> }> {
     const cwd = params?.cwd;
+    debugLog(`createSession v${protocolVersion} cwd=${cwd}`);
     if (!cwd || typeof cwd !== 'string' || !path.isAbsolute(cwd)) {
       throw new RequestError(-32602, 'cwd must be an absolute path');
     }

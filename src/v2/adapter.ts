@@ -12,7 +12,8 @@ export class AgyAcpV2Service {
     const configOptions = buildV2ConfigOptions(discovery);
 
     // Strictly conforms to ACP v2 InitializeResponse schema:
-    // Only protocolVersion, info, capabilities, authMethods, _meta
+    // Only protocolVersion, info, capabilities, authMethods, _meta.
+    // NOTE (bisect 2026-09-22): authMethods OMITTED, same as v1.
     return {
       protocolVersion: 2,
       info: AGENT_INFO,

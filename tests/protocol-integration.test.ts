@@ -57,17 +57,20 @@ describe('Simulated Integration Tests (Offline Mock CLI)', () => {
   });
 
   describe('ACP V1 Wire-level Conformance', () => {
-    test('V1 initialize strictly encapsulates extensions in _meta without top-level leakage', async () => {
+    test('V1 initialize returns minimal Zed-verified shape with authMethods array', async () => {
       const core = new AgySessionCore();
       const v1Service = new AgyAcpV1Service(core);
       const res = await v1Service.initialize();
 
-      // Official ACP V1 Schema compliance
+      // Official ACP V1 Schema compliance (minimal Zed-verified shape)
       expect(res.protocolVersion).toBe(1);
       expect(res.agentInfo.name).toBe(AGENT_INFO.name);
       expect(res.agentCapabilities.loadSession).toBe(true);
-      expect(res.agentCapabilities.sessionCapabilities.delete).toBeDefined();
+      expect(res.agentCapabilities.sessionCapabilities.delete).toBeUndefined();
+      expect(res.agentCapabilities.sessionCapabilities.close).toBeDefined();
       expect(res.agentCapabilities.sessionCapabilities.resume).toBeDefined();
+      // authMethods must exist as an array (may be empty: agy CLI owns creds)
+      expect(Array.isArray(res.authMethods)).toBe(true);
 
       // Verify non-standard extensions are strictly under _meta
       expect((res as any).availableModels).toBeUndefined();
@@ -75,9 +78,9 @@ describe('Simulated Integration Tests (Offline Mock CLI)', () => {
       expect((res as any).bridgeCapabilities).toBeUndefined();
       expect((res as any).capabilities).toBeUndefined();
 
-      expect(res._meta.availableModels).toContain('gemini-3.8-flash-high');
-      expect(res._meta.bridgeCapabilities.streaming).toBe(true);
-      expect(res._meta.bridgeCapabilities.dynamicConfig).toBe('restart');
+      // Minimal Zed-verified shape: no _meta on initialize (models arrive
+      // via session/new configOptions instead)
+      expect((res as any)._meta).toBeUndefined();
     });
 
     test('V1 promptSession emits NO user_message, NO state_update, and preserves native thought/tool updates', async () => {
@@ -216,6 +219,8 @@ describe('Simulated Integration Tests (Offline Mock CLI)', () => {
       expect(res.info.name).toBe(AGENT_INFO.name);
       expect(res.capabilities.session.additionalDirectories).toBeDefined();
       expect(res.capabilities.session.delete).toBeDefined();
+      // Same as v1 bisect note: field omitted for now.
+      expect((res as any).authMethods).toBeUndefined();
 
       // Verify non-standard extensions are strictly under _meta
       expect((res as any).availableModels).toBeUndefined();

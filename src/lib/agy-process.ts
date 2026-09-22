@@ -116,8 +116,11 @@ function isAgyExecutable(bin: string): boolean {
 
 function findHeadlessLauncher(): string | null {
   const moduleDir = (import.meta as ImportMeta & { dir?: string }).dir ?? path.dirname(process.argv[1] ?? '');
+  const execDir = path.dirname(process.execPath ?? '');
   const candidates = [
     process.env.AGY_HEADLESS_LAUNCHER,
+    // Compiled single-file exe (codex parity): launcher sits next to the exe.
+    execDir ? path.join(execDir, 'agy-headless.exe') : undefined,
     // Source execution: src/lib -> repository root -> dist.
     path.resolve(moduleDir, '..', '..', 'dist', 'agy-headless.exe'),
     // Bundled execution: dist/bin.js -> dist.

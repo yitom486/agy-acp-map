@@ -300,7 +300,7 @@ Engineering feasibility ≠ legal permission. 即便只用官方 CLI I/O，仍�
 
 ## ACP V1 vs V2 Draft Specifications / 协议版本说明
 
-- **ACP V1 (Stable)**: Production-grade implementation fully conforming to canonical ACP v1 JSON-RPC specifications. Includes capability purity (extensions encapsulated under `_meta`), deterministic keyset cursor pagination on `session/list`, atomic session deletion, and strict session/resume semantics (`sessionId` + `cwd` required, cwd matching, omitted `additionalDirectories` reset to empty).
+- **ACP V1 (Stable)**: Production-grade implementation fully conforming to canonical ACP v1 JSON-RPC specifications. `initialize` returns a minimal Zed-verified shape (`protocolVersion`, `agentInfo`, `agentCapabilities`, `authMethods: []`; models arrive via `session/new` `configOptions`). Includes deterministic keyset cursor pagination on `session/list`, atomic session deletion, and strict session/resume semantics (`sessionId` + `cwd` required, cwd matching, omitted `additionalDirectories` reset to empty).
 - **ACP V2 (Draft)**: Experimental v2 draft support built on `@agentclientprotocol/sdk@1.4.0` (`@agentclientprotocol/sdk/experimental/v2`). Conforms to the SDK's schema where `session/prompt` acknowledges prompt acceptance with an immediate `{}` (empty object) response, and subsequent progress is streamed via `session/update` notifications (`state_update: running -> chunks -> state_update: idle`).
 - **Prompt Validation**: All content blocks (`text`, `resource`, `resource_link`, `image`, `audio`) are validated synchronously before sending ACK, preventing background silent failures.
 
@@ -310,6 +310,57 @@ Engineering feasibility ≠ legal permission. 即便只用官方 CLI I/O，仍�
 - **Native Windows launcher**: `dist/agy-headless.exe` is a GUI-subsystem wrapper that starts console children with `CREATE_NO_WINDOW` and forwards stdio. Real `agy.exe` sessions, discovery probes, and `taskkill` are routed through it when it is present.
 - **Zed / Editor Configuration**: When configuring the bridge in Zed on Windows, point directly to `bun` or `node` with `dist/bin.js` (or a windowless shim) rather than a `.cmd` or `.bat` wrapper. Batch scripts cause `cmd.exe` to flash a console window on launch before passing control to Node/Bun.
 - **If a custom Zed server still flashes**: use the native wrapper as the custom command itself, for example `command: "<repo>\\dist\\agy-headless.exe"` with args `["<path-to-bun-or-node>", "<repo>\\src\\sdk-server.ts"]` (or `dist\\bin.js`). You can also set `AGY_HEADLESS_LAUNCHER` to an absolute wrapper path. Packaging the bridge on npm improves distribution, but npm packaging alone does not change Windows process creation flags.
+
+## Zed via npm (global install) / Zed 全局安装用法
+
+No Bun / TypeScript needed at runtime — the published package ships compiled
+`dist/` artifacts (`bin.js` for Node, `agy-headless.exe`, plus the optional
+single-file `agy-acp-win-x64.exe`). A **global** install is recommended so Zed
+gets a stable absolute path (repo moves would break a local path):
+
+```powershell
+npm install -g @yitom/agy-acp-map
+npm root -g   # e.g. C:\Users\<you>\AppData\Roaming\npm\node_modules
+```
+
+Recommended Zed `agent_servers` entry (zero console flash: GUI shim starts
+plain `node`, only `node` is required on the machine):
+
+```jsonc
+"agy-acp-map-local": {
+  "type": "custom",
+  "command": "C:\\Users\\<you>\\AppData\\Roaming\\npm\\node_modules\\@yitom\\agy-acp-map\\dist\\agy-headless.exe",
+  "args": ["node", "C:\\Users\\<you>\\AppData\\Roaming\\npm\\node_modules\\@yitom\\agy-acp-map\\dist\\bin.js"],
+  "env": {}
+}
+```
+
+Fallback without the shim (works, but `node.exe` flashes one console frame on
+launch because Zed spawns agents without `CREATE_NO_WINDOW`):
+
+```jsonc
+"agy-acp-map-local": {
+  "type": "custom",
+  "command": "node",
+  "args": ["C:\\Users\\<you>\\AppData\\Roaming\\npm\\node_modules\\@yitom\\agy-acp-map\\dist\\bin.js"],
+  "env": {}
+}
+```
+
+Do NOT point Zed at the `agy-acp` / `agy-acp.cmd` global bin wrappers (extra
+`cmd.exe` flash), at `src/*.ts` sources (needs Bun, dev only), or at
+`bun`/`node` without an absolute `dist` path. `initialize` intentionally
+returns a minimal response (`protocolVersion`, `agentInfo`,
+`agentCapabilities`, `authMethods: []`); models arrive via `session/new`
+`configOptions`, so the Zed model picker keeps working.
+
+Troubleshooting: the bridge hides nothing from disk — append-only file log at
+`%TEMP%\agy-acp.log` (override with `AGY_ACP_LOG`; ~1MB rotation). If Zed says
+`Server exited with status exit code: 0` right after launch, check the tail of
+that file: `START` with no following `V1 initialize called` means Zed never
+sent bytes (spawn/config issue); `V1 initialize called` followed by
+`stdin END` means Zed rejected the handshake (capture the exchange and compare
+against a known-good agent such as `opencode acp`).
 
 ## Bun + TypeScript / Windows
 

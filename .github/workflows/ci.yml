@@ -80,6 +80,12 @@ jobs:
 
       - name: Build distribution
         run: bun run build
+        env:
+          # Cross-compile the GUI shim on Linux so published packages ship it.
+          AGY_HEADLESS_CROSS: '1'
+
+      - name: Build Windows single-file exe (codex-style, no runtime needed)
+        run: bun run build:exe
 
       - name: Publish to NPM
         run: npm publish --access public --provenance

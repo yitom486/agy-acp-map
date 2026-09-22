@@ -34,3 +34,4 @@ export * from './lib/agy-discovery.ts';
 export * from './lib/session-store.ts';
 export * from './lib/session-history.ts';
 export * from './lib/win32-console.ts';
+export * from './lib/debug-log.ts';

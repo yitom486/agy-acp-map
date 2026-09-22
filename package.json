@@ -1,6 +1,6 @@
 {
   "name": "@yitom/agy-acp-map",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "publishConfig": {
     "access": "public"
   },
@@ -28,6 +28,7 @@
     "build": "bun run build:js && bun run build:types && bun run build:headless",
     "build:headless": "bun scripts/build-headless.ts",
     "build:js": "bun build src/sdk-server.ts --target node --outfile dist/bin.js && bun build src/index.ts --target node --outfile dist/index.js",
+    "build:exe": "bun build src/sdk-server.ts --compile --target=bun-windows-x64 --outfile dist/agy-acp-win-x64.exe",
     "build:types": "bunx tsc -p tsconfig.build.json",
     "release:patch": "bun scripts/release.ts",
     "release:publish": "bun scripts/release.ts --publish",
