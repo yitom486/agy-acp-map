@@ -1,3 +1,11 @@
+## v0.1.10 — publish-pipeline failure diagnostics (2026-09-22)
+
+- CI only: dump `/tmp/agy-acp.log` + lingering test processes when the
+  publish job fails, so wire-e2e hangs can be triaged with evidence.
+- Runtime identical to v0.1.9.
+
+---
+
 ## v0.1.9 — shutdown kills supervised children, no orphans (2026-09-22)
 
 - Bridge exit (`stdin` EOF, `SIGINT`, `SIGTERM`) now awaits

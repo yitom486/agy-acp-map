@@ -91,3 +91,13 @@ jobs:
         run: npm publish --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Dump bridge file-log on failure (wire-e2e triage)
+        if: failure()
+        run: |
+          echo "--- node/bun versions ---"
+          node --version; bun --version
+          echo "--- bridge file log (/tmp/agy-acp.log) ---"
+          cat /tmp/agy-acp.log 2>/dev/null | tail -n 60 || echo "(no bridge log)"
+          echo "--- lingering test processes ---"
+          ps aux | grep -E "sdk-server|mock-agy" | grep -v grep || echo "(none)"
