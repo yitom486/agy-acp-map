@@ -717,8 +717,7 @@ describe('Simulated Integration Tests (Offline Mock CLI)', () => {
       await v1Service.deleteSession({ sessionId });
     });
 
-    test('list hides old disk-only empties but keeps live/turned/fresh rows', async () => {
-      const core = new AgySessionCore();
+    test('list hides old disk-only empties but keeps live/turned/fresh rows', async () => {      const core = new AgySessionCore();
       const v1Service = new AgyAcpV1Service(core);
       const now = Date.now();
       const old = new Date(now - EMPTY_SESSION_MAX_AGE_MS - 60_000).toISOString();
@@ -743,10 +742,30 @@ describe('Simulated Integration Tests (Offline Mock CLI)', () => {
 
       // Hidden rows stay resumable/deletable by id (store keeps them).
       expect(core.sessionStore.get('hide-old-empty')).toBeDefined();
+      // Opening a hidden row rehydrates it (proves hiding != deleting).
+      await v1Service.resumeSession({ sessionId: 'hide-old-empty', cwd: testCwd });
+      expect(core.sessions.has('hide-old-empty')).toBe(true);
+      await v1Service.closeSession({ sessionId: 'hide-old-empty' });
       await v1Service.deleteSession({ sessionId: liveId });
       await v1Service.deleteSession({ sessionId: 'hide-old-empty' });
       await v1Service.deleteSession({ sessionId: 'keep-old-turned' });
       await v1Service.deleteSession({ sessionId: 'keep-fresh-empty' });
+    });
+
+    test('resume backfills list title from history for pre-title sessions', async () => {
+      const core = new AgySessionCore();
+      const v1Service = new AgyAcpV1Service(core);
+      const sid = 'backfill-title-1';
+      const now = new Date().toISOString();
+      core.sessionStore.upsert({ sessionId: sid, cwd: testCwd, createdAt: now, updatedAt: now });
+      core.historyStore.appendTurn(sid, 'Backfill title prompt here', 'Some old answer');
+
+      await v1Service.resumeSession({ sessionId: sid, cwd: testCwd });
+
+      const listed = await v1Service.listSessions({ cwd: testCwd });
+      const row = listed.sessions.find((s: any) => s.sessionId === sid);
+      expect(row?.title).toContain('Backfill title prompt here');
+      await v1Service.deleteSession({ sessionId: sid });
     });
   });
 });

@@ -1,3 +1,12 @@
+## v0.1.8 — session list titles, incl. backfill (2026-09-22)
+
+- `session/list` rows carry `title` again (first user prompt, one line,
+  60 chars): set on first completed turn, backfilled from the history
+  journal on resume/load for pre-title sessions (one cheap read, once).
+- Studio sidebars render title + relative time instead of raw ids.
+
+---
+
 ## v0.1.7 — session list titles & abandoned-empty hiding (2026-09-22)
 
 - `session/list` rows now carry `title` (first user prompt, one line, 60 chars,

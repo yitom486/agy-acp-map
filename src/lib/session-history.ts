@@ -112,6 +112,20 @@ export class SessionHistoryStore {
 
   /** Read valid records and ignore incomplete/corrupt trailing lines. */
   read(sessionId: string): SessionHistoryRecord[] {
+    return this.readUpTo(sessionId, Infinity);
+  }
+
+  /**
+   * First user prompt text for backfilling list titles. Stops at the first
+   * valid user record instead of parsing the whole journal.
+   */
+  firstUserText(sessionId: string): string | null {
+    const records = this.readUpTo(sessionId, 50);
+    const first = records.find((r) => r.role === 'user' && r.text.trim());
+    return first ? first.text : null;
+  }
+
+  private readUpTo(sessionId: string, maxLines: number): SessionHistoryRecord[] {
     const file = this.filePath(sessionId);
     if (!fs.existsSync(file)) return [];
 
@@ -123,8 +137,10 @@ export class SessionHistoryStore {
     }
 
     const records: SessionHistoryRecord[] = [];
+    let lines = 0;
     for (const line of raw.split(/\r?\n/)) {
       if (!line.trim()) continue;
+      if (++lines > maxLines) break;
       try {
         const parsed = JSON.parse(line);
         if (isRecord(parsed) && parsed.sessionId === sessionId) {

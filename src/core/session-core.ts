@@ -501,6 +501,16 @@ export class AgySessionCore {
 
     const discovery = await this.getDiscovery();
     this.applyCatalogDefaults(session, discovery);
+    // Backfill list titles for pre-title sessions from their history journal
+    // (first user prompt). One cheap read, once per session lifetime.
+    if (!session.title) {
+      try {
+        const first = this.historyStore.firstUserText(sessionId);
+        if (first && first.trim()) session.title = deriveTitle(first);
+      } catch {
+        // History is best-effort display cache; never break resume.
+      }
+    }
     this.persistSession(session);
     // Re-attached sessions also get a warm process if none is alive.
     // History-only loads (v1 session/load) skip this: no prompt follows yet.
