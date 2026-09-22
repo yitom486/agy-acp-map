@@ -1,3 +1,15 @@
+## v0.1.13 — thin npm package: bunx-first like codex (2026-09-22)
+
+- The 95MB compiled `agy-acp-win-x64.exe` is OUT of the npm tarball
+  (`bun run build:exe` now emits `release/agy-acp-win-x64.exe`, uploaded to
+  the GitHub Release by CI). npm ships only `dist/bin.js` + `dist/index.js`
+  + `dist/agy-headless.exe` (~5MB): first `bunx @yitom/agy-acp-map@latest`
+  downloads in seconds, then runs from cache — same shape as codex-acp.
+- `acp-studio` launches the bridge via bunx/npx (`@latest`), no managed
+  install required.
+
+---
+
 ## v0.1.12 — surface agy error_message retries visibly (2026-09-22)
 
 - `step_type: error_message` (model-side failures while agy retries, e.g.

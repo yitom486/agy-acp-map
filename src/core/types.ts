@@ -6,7 +6,7 @@ import type { SoftDenyInfo } from '../lib/soft-deny.ts';
 export const AGENT_INFO = {
   name: 'agy-acp',
   title: 'agy ACP (stream-json)',
-  version: '0.1.12',
+  version: '0.1.13',
 };
 
 export const BRIDGE_CAPABILITIES = {

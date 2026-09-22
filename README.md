@@ -314,8 +314,9 @@ Engineering feasibility ≠ legal permission. 即便只用官方 CLI I/O，仍�
 ## Zed via npm (global install) / Zed 全局安装用法
 
 No Bun / TypeScript needed at runtime — the published package ships compiled
-`dist/` artifacts (`bin.js` for Node, `agy-headless.exe`, plus the optional
-single-file `agy-acp-win-x64.exe`). A **global** install is recommended so Zed
+`dist/` artifacts (`bin.js` for Node, `agy-headless.exe`). The optional
+single-file `agy-acp-win-x64.exe` (no runtime needed) is a GitHub Release
+asset, not part of the npm tarball. A **global** install is recommended so Zed
 gets a stable absolute path (repo moves would break a local path):
 
 ```powershell

@@ -6,6 +6,7 @@ smoke-workdir-*/
 .env
 .env.*
 dist/
+release/
 .cache/
 scratch/
 *.bun-build*
