@@ -48,7 +48,14 @@ async function shutdown(code: number): Promise<never> {
 
 process.on('SIGINT', () => void shutdown(0));
 process.on('SIGTERM', () => void shutdown(0));
+// Parent gone => stdio dead => clean up children and exit (this, not the
+// line below connect(), is the normal termination path).
+process.stdin.on('end', () => void shutdown(0));
+process.stdin.on('close', () => void shutdown(0));
 
 await app.connect(stream);
-debugLog('CONNECT-SETUP-DONE (stream established; exit 0 only happens after stdin END/CLOSE)');
-await shutdown(0);
+debugLog('CONNECT-SETUP-DONE (serving; exit only via stdin close or signal)');
+// NOTE: AgentApp.connect() only wires the transport and returns immediately;
+// it does NOT run until the stream closes. Shutting down here would kill the
+// server on every boot. Termination happens via stdin end/close (parent gone)
+// or signals above — never unconditionally below connect().

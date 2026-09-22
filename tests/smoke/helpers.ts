@@ -68,12 +68,42 @@ export function createSmokeHarness(opts: SmokeHarnessOptions = {}): SmokeHarness
   function send(method: string, params?: any): Promise<any> {
     const id = nextId++;
     const msg = { jsonrpc: '2.0', id, method, params };
-    child.stdin?.write(JSON.stringify(msg) + '\n');
+    try {
+      if (!child.stdin || child.stdin.destroyed || child.exitCode !== null) {
+        return Promise.reject(
+          new Error(`[${tag}] send ${method}: server stdio gone (exit=${child.exitCode}, signal=${child.signalCode})`),
+        );
+      }
+      child.stdin.write(JSON.stringify(msg) + '\n');
+    } catch (err) {
+      return Promise.reject(err instanceof Error ? err : new Error(String(err)));
+    }
     log('→', msg);
     return new Promise((resolve, reject) => {
       pending.set(id, { method, sessionId: params?.sessionId, resolve, reject });
     });
   }
+
+  function failPending(reason: string): void {
+    if (pending.size === 0) return;
+    log('server-gone', `${reason}; failing ${pending.size} pending request(s)`);
+    for (const [id, p] of pending) {
+      pending.delete(id);
+      p.reject(new Error(`[${tag}] ${p.method} #${id} failed: ${reason}`));
+    }
+    if (onIdleCallback) {
+      onIdleCallback = null;
+    }
+  }
+
+  child.on('error', (err: Error) => {
+    failPending(`server spawn error: ${err.message}`);
+  });
+
+  child.on('exit', (code: number | null, signal: NodeJS.Signals | null) => {
+    log('server-exit', `code=${code} signal=${signal}`);
+    failPending(`server exited (code=${code}, signal=${signal}) before responding`);
+  });
 
   function notify(method: string, params?: any): void {
     const msg = { jsonrpc: '2.0', method, params };

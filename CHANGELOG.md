@@ -1,3 +1,16 @@
+## v0.1.11 — fix boot self-kill; loud wire harness (2026-09-22)
+
+- **Critical fix**: `AgentApp.connect()` only wires the transport and returns
+  immediately — it never runs until close. The v0.1.9 shutdown call placed
+  after it therefore killed every boot within ~200ms (all wire e2e hung;
+  caught locally, never shipped — v0.1.9 publish failed). Termination now
+  happens only on stdin end/close (parent gone) or SIGINT/SIGTERM, still
+  killing supervised children (no orphans, no EBUSY on updates).
+- **Wire harness fails loud**: spawn error / early server exit now rejects
+  pending requests with the exit code instead of hanging 30s silently.
+
+---
+
 ## v0.1.10 — publish-pipeline failure diagnostics (2026-09-22)
 
 - CI only: dump `/tmp/agy-acp.log` + lingering test processes when the
