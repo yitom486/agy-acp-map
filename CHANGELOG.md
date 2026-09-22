@@ -1,3 +1,13 @@
+## v0.1.6 — align wire tests with minimal initialize (2026-09-22)
+
+- `tests/protocol-wire-stdio.test.ts` V1 assertions updated to the minimal
+  Zed-verified shape (no `_meta` on `initialize`, caps `{close,list,resume}`,
+  `authMethods: []`). This un-breaks `prepublishOnly` (`bun test` runs the
+  full suite incl. wire tests), which blocked the v0.1.5 npm publish on CI.
+- Version bump only otherwise (runtime identical to v0.1.5).
+
+---
+
 ## v0.1.5 — Zed-verified minimal initialize, single-file exe, file logging (2026-09-22)
 
 ### Fixed

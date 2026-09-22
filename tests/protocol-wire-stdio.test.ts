@@ -70,14 +70,14 @@ describe('Wire-level Stdio JSON-RPC Integration (Full sdk-server Process)', () =
         info: { name: 'zed-v1-client', version: '0.1.0' },
       });
 
-      // Strict V1 Schema verification on the wire
+      // Strict V1 Schema verification on the wire (minimal Zed-verified shape)
       expect(initRes.protocolVersion).toBe(1);
       const topKeys = Object.keys(initRes);
       expect(topKeys).not.toContain('bridgeCapabilities');
       expect(topKeys).not.toContain('availableModels');
       expect(topKeys).not.toContain('availableAgents');
-      expect(initRes._meta).toBeDefined();
-      expect(initRes._meta.bridgeCapabilities).toBeDefined();
+      expect(Array.isArray(initRes.authMethods)).toBe(true);
+      expect(initRes._meta).toBeUndefined();
 
       // 2. New Session V1
       const sessionRes = await harness.send('session/new', {
@@ -125,9 +125,10 @@ describe('Wire-level Stdio JSON-RPC Integration (Full sdk-server Process)', () =
       const firstUpdateIdx = sessionUpdates.findIndex((u) => u.sessionUpdate === 'tool_call_update');
       expect(firstCallIdx).toBeLessThan(firstUpdateIdx);
 
-      // V1 advertises standard session/load replay, plus session/delete support
+      // V1 advertises standard session/load replay, plus session list/resume/close
       expect(initRes.agentCapabilities?.loadSession).toBe(true);
-      expect(initRes.agentCapabilities?.sessionCapabilities?.delete).toBeDefined();
+      expect(initRes.agentCapabilities?.sessionCapabilities?.list).toBeDefined();
+      expect(initRes.agentCapabilities?.sessionCapabilities?.resume).toBeDefined();
 
       // 5. Delete session over stdio wire
       const deleteRes = await harness.send('session/delete', { sessionId });
