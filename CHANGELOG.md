@@ -1,3 +1,14 @@
+## v0.1.7 — session list titles & abandoned-empty hiding (2026-09-22)
+
+- `session/list` rows now carry `title` (first user prompt, one line, 60 chars,
+  set on first completed turn; surfaces in Studio/Zed sidebars instead of raw ids).
+- `session/list` hides abandoned empties: disk-only rows with no
+  `conversationId` older than 1h (`EMPTY_SESSION_MAX_AGE_MS`). Rows stay on
+  disk (resumable/deletable by id); live in-memory sessions always listed.
+- `listSessions` accepts an optional `{ now }` override for deterministic tests.
+
+---
+
 ## v0.1.6 — align wire tests with minimal initialize (2026-09-22)
 
 - `tests/protocol-wire-stdio.test.ts` V1 assertions updated to the minimal

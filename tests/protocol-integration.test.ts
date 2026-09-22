@@ -7,7 +7,7 @@ import { AgyAcpService, AGENT_INFO } from '../src/agent-sdk.ts';
 import { AgyAcpV1Service } from '../src/v1/adapter.ts';
 import { AgyAcpV2Service } from '../src/v2/adapter.ts';
 import { createAcpV2App } from '../src/v2/app.ts';
-import { AgySessionCore } from '../src/core/session-core.ts';
+import { AgySessionCore, deriveTitle, EMPTY_SESSION_MAX_AGE_MS } from '../src/core/session-core.ts';
 import { setCachedDiscoveryForTest, clearDiscoveryCache } from '../src/lib/agy-discovery.ts';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -688,6 +688,65 @@ describe('Simulated Integration Tests (Offline Mock CLI)', () => {
 
       // Invalid: empty resource_link
       expect(validatePromptBlocks([{ type: 'resource_link' }]).ok).toBe(false);
+    });
+  });
+
+  describe('Session list titles & abandoned-empty hiding', () => {
+    test('deriveTitle collapses to one capped line', async () => {
+      expect(deriveTitle('  Hello title world  ')).toBe('Hello title world');
+      expect(deriveTitle('first\nsecond line')).toBe('first');
+      expect(deriveTitle('   \n  spaced   out   ')).toBe('spaced out');
+      const long = 'x'.repeat(100);
+      expect(deriveTitle(long)).toBe(`${'x'.repeat(60)}…`);
+      expect(deriveTitle('')).toBe('');
+    });
+
+    test('first prompt turn sets list title', async () => {
+      const core = new AgySessionCore();
+      const v1Service = new AgyAcpV1Service(core);
+      const { sessionId } = await v1Service.newSession({ cwd: testCwd });
+
+      await v1Service.promptSession(
+        { sessionId, prompt: [{ type: 'text', text: 'How do you rate Xin Haicheng' }] },
+        () => {},
+      );
+
+      const listed = await v1Service.listSessions({ cwd: testCwd });
+      const row = listed.sessions.find((s: any) => s.sessionId === sessionId);
+      expect(row?.title).toContain('How do you rate Xin Haicheng');
+      await v1Service.deleteSession({ sessionId });
+    });
+
+    test('list hides old disk-only empties but keeps live/turned/fresh rows', async () => {
+      const core = new AgySessionCore();
+      const v1Service = new AgyAcpV1Service(core);
+      const now = Date.now();
+      const old = new Date(now - EMPTY_SESSION_MAX_AGE_MS - 60_000).toISOString();
+      const fresh = new Date(now - 5 * 60_000).toISOString();
+
+      core.sessionStore.upsert({ sessionId: 'hide-old-empty', cwd: testCwd, createdAt: old, updatedAt: old });
+      core.sessionStore.upsert({
+        sessionId: 'keep-old-turned', cwd: testCwd, createdAt: old, updatedAt: old,
+        conversationId: 'conv-keep',
+      });
+      core.sessionStore.upsert({ sessionId: 'keep-fresh-empty', cwd: testCwd, createdAt: fresh, updatedAt: fresh });
+
+      // Live in-memory session with no turns yet: always listed.
+      const { sessionId: liveId } = await v1Service.newSession({ cwd: testCwd });
+
+      const listed = await v1Service.listSessions({ cwd: testCwd }, { now });
+      const ids = listed.sessions.map((s: any) => s.sessionId);
+      expect(ids).not.toContain('hide-old-empty');
+      expect(ids).toContain('keep-old-turned');
+      expect(ids).toContain('keep-fresh-empty');
+      expect(ids).toContain(liveId);
+
+      // Hidden rows stay resumable/deletable by id (store keeps them).
+      expect(core.sessionStore.get('hide-old-empty')).toBeDefined();
+      await v1Service.deleteSession({ sessionId: liveId });
+      await v1Service.deleteSession({ sessionId: 'hide-old-empty' });
+      await v1Service.deleteSession({ sessionId: 'keep-old-turned' });
+      await v1Service.deleteSession({ sessionId: 'keep-fresh-empty' });
     });
   });
 });

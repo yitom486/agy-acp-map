@@ -53,6 +53,17 @@ export interface SessionCoreOptions {
   historyStore?: SessionHistoryStore | string;
 }
 
+/** Rows without any completed turn older than this are hidden from
+ * session/list (still resumable/deletable by id — the store keeps them). */
+export const EMPTY_SESSION_MAX_AGE_MS = 60 * 60 * 1000;
+
+/** First user prompt collapsed to one line, capped for list display. */
+export function deriveTitle(text: string, maxLen = 60): string {
+  const line = String(text || '').split(/\r?\n/).map((s) => s.trim()).find(Boolean) || '';
+  const flat = line.replace(/\s+/g, ' ');
+  return flat.length > maxLen ? flat.slice(0, maxLen) + '…' : flat;
+}
+
 export class AgySessionCore {
   readonly sessions = new Map<string, SdkSession>();
   readonly sessionStore: SessionStore;
@@ -573,7 +584,10 @@ export class AgySessionCore {
     };
   }
 
-  async listSessions(params?: any): Promise<{ sessions: any[]; nextCursor?: string | null }> {
+  async listSessions(
+    params?: any,
+    opts?: { now?: number },
+  ): Promise<{ sessions: any[]; nextCursor?: string | null }> {
     const filterCwd = params?.cwd;
     if (filterCwd !== undefined && filterCwd !== null) {
       if (typeof filterCwd !== 'string' || !path.isAbsolute(filterCwd)) {
@@ -599,6 +613,16 @@ export class AgySessionCore {
     }
 
     for (const r of diskById.values()) {
+      // Hide abandoned empties from the list view (no completed turn AND
+      // older than the window). Rows stay on disk: resumable/deletable by
+      // id. Live in-memory sessions are always listed (loop above).
+      if (!r.conversationId) {
+        const updated = r.updatedAt ? new Date(r.updatedAt).getTime() : NaN;
+        const now = opts?.now ?? Date.now();
+        if (Number.isFinite(updated) && now - updated > EMPTY_SESSION_MAX_AGE_MS) {
+          continue;
+        }
+      }
       allSessions.push({
         sessionId: r.sessionId,
         cwd: r.cwd,
@@ -851,6 +875,10 @@ export class AgySessionCore {
             stopReason,
             historyTurnEligible,
           );
+          // First-turn title: feeds session/list display (id prefix otherwise).
+          if (!session.title && text.trim()) {
+            session.title = deriveTitle(text);
+          }
           this.persistSession(session);
 
           // Auto-clean turn staged files unless explicitly requested to keep

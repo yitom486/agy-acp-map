@@ -65,8 +65,8 @@ export class AgyAcpV2Service {
     };
   }
 
-  async listSessions(params?: any): Promise<any> {
-    return this.core.listSessions(params);
+  async listSessions(params?: any, opts?: { now?: number }): Promise<any> {
+    return this.core.listSessions(params, opts);
   }
 
   async closeSession(params: any): Promise<any> {
