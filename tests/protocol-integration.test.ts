@@ -628,10 +628,10 @@ describe('Simulated Integration Tests (Offline Mock CLI)', () => {
         v1Service.resumeSession({ sessionId, cwd: testCwd, replayFrom: { type: 'start' } }),
       ).rejects.toThrow(/replayFrom is only supported by ACP v2/);
 
-      // Non-empty mcpServers rejected
+      // Malformed mcpServers entry rejected (fail fast, no silent no-tools session)
       await expect(
         v1Service.resumeSession({ sessionId, cwd: testCwd, mcpServers: [{ name: 'dummy' }] }),
-      ).rejects.toThrow(/mcpServers are not supported/);
+      ).rejects.toThrow(/needs a command/);
 
       // Non-array additionalDirectories rejected
       await expect(v1Service.resumeSession({ sessionId, cwd: testCwd, additionalDirectories: 'not-an-array' })).rejects.toThrow(

@@ -41,6 +41,13 @@ import {
   resolveHistoryDir,
 } from '../lib/session-history.ts';
 import {
+  validateMcpServers,
+  syncMcpServers,
+  removeMcpServers,
+  defaultMcpRunFn,
+  type McpRunFn,
+} from '../lib/mcp-servers.ts';
+import {
   type SdkSession,
   type ProtocolVersion,
   catalogChoices,
@@ -51,11 +58,34 @@ import { debugLog } from '../lib/debug-log.ts';
 export interface SessionCoreOptions {
   sessionStore?: SessionStore | string;
   historyStore?: SessionHistoryStore | string;
+  /**
+   * `agy mcp ...` runner override (tests inject a fake; prod spawns agy).
+   * Keeps MCP sync unit-testable without touching the real global config.
+   */
+  mcpRunner?: McpRunFn;
 }
 
 /** Rows without any completed turn older than this are hidden from
  * session/list (still resumable/deletable by id — the store keeps them). */
 export const EMPTY_SESSION_MAX_AGE_MS = 60 * 60 * 1000;
+
+/** Resolve the agy binary (AGY_BIN, else ~/.gemini/bin/agy). Shared by spawn and `agy mcp ...` sync. */
+export function resolveAgyBin(): string {
+  const rawBin = process.env.AGY_BIN;
+  let bin = rawBin && rawBin !== 'undefined' && rawBin !== 'null' ? rawBin : 'agy';
+  if (bin === 'agy' || bin === 'agy.exe') {
+    const geminiBin = path.join(
+      process.env.USERPROFILE || process.env.HOME || '',
+      '.gemini',
+      'bin',
+      process.platform === 'win32' ? 'agy.exe' : 'agy',
+    );
+    if (fs.existsSync(geminiBin)) {
+      bin = geminiBin;
+    }
+  }
+  return bin;
+}
 
 /** First user prompt collapsed to one line, capped for list display. */
 export function deriveTitle(text: string, maxLen = 60): string {
@@ -69,8 +99,16 @@ export class AgySessionCore {
   readonly sessionStore: SessionStore;
   readonly historyStore: SessionHistoryStore;
   private catalogPromise: Promise<DiscoveryResult> | null = null;
+  private readonly mcpRunner: McpRunFn;
+  /**
+   * MCP server name → sessionIds that registered it (this process only).
+   * Drives delete-time cleanup: a server is `agy mcp remove`d only when its
+   * last referencing session goes away.
+   */
+  private readonly mcpRefs = new Map<string, Set<string>>();
 
   constructor(options?: SessionCoreOptions) {
+    this.mcpRunner = options?.mcpRunner ?? defaultMcpRunFn;
     if (options?.sessionStore instanceof SessionStore) {
       this.sessionStore = options.sessionStore;
     } else if (typeof options?.sessionStore === 'string') {
@@ -124,19 +162,8 @@ export class AgySessionCore {
       disableSlashCommands: disableSlash,
       printTimeout,
     });
-    const rawBin = process.env.AGY_BIN;
-    let bin = rawBin && rawBin !== 'undefined' && rawBin !== 'null' ? rawBin : 'agy';
-    if (bin === 'agy' || bin === 'agy.exe') {
-      const geminiBin = path.join(
-        process.env.USERPROFILE || process.env.HOME || '',
-        '.gemini',
-        'bin',
-        process.platform === 'win32' ? 'agy.exe' : 'agy',
-      );
-      if (fs.existsSync(geminiBin)) {
-        bin = geminiBin;
-      }
-    }
+    const rawBin = resolveAgyBin();
+    const bin = rawBin;
     let execBin = bin;
     let execArgs = args;
     if (/\.(js|cjs|mjs|ts)$/i.test(bin)) {
@@ -288,6 +315,62 @@ export class AgySessionCore {
     if (!session.agent && agents.length) session.agent = agents[0].value;
   }
 
+  /**
+   * Sync ACP mcpServers into agy's MCP config BEFORE the session process
+   * spawns, so tools are listed from the first turn. Throws loud on any
+   * failure (a client that asked for MCP must never get a silent
+   * tools-less session). Tracks names per session for delete-time cleanup.
+   */
+  private async applySessionMcpServers(
+    sessionId: string,
+    input: unknown,
+  ): Promise<Array<{ name: string }>> {
+    const servers = validateMcpServers(input ?? []);
+    if (!servers.length) return [];
+    const live = this.sessions.get(sessionId);
+    const hadLiveProc = live ? live.proc.isWritable() : false;
+    await syncMcpServers(resolveAgyBin(), servers, this.mcpRunner);
+    const names = servers.map((s) => ({ name: s.name }));
+    if (live) live.mcpServers = names;
+    this.trackMcpServers(sessionId, names.map((n) => n.name));
+    if (hadLiveProc) {
+      // A live agy process read its MCP config at spawn; newly added
+      // servers take effect on the next fresh spawn (reconnect).
+      console.warn(
+        `[ACP-MCP] session ${sessionId}: MCP servers [${names.map((n) => n.name).join(', ')}] ` +
+          `registered while the session process is live; they apply to fresh spawns (reconnect to use them).`,
+      );
+    }
+    return names;
+  }
+
+  private trackMcpServers(sessionId: string, names: string[]): void {
+    for (const name of names) {
+      let set = this.mcpRefs.get(name);
+      if (!set) {
+        set = new Set();
+        this.mcpRefs.set(name, set);
+      }
+      set.add(sessionId);
+    }
+  }
+
+  /**
+   * Drop one session's references; returns names no other live session
+   * references anymore (safe to `agy mcp remove`).
+   */
+  private untrackMcpServers(sessionId: string): string[] {
+    const freed: string[] = [];
+    for (const [name, set] of this.mcpRefs) {
+      set.delete(sessionId);
+      if (set.size === 0) {
+        this.mcpRefs.delete(name);
+        freed.push(name);
+      }
+    }
+    return freed;
+  }
+
   async createSession(
     params: any,
     protocolVersion: ProtocolVersion = 1,
@@ -314,6 +397,8 @@ export class AgySessionCore {
     if (params?.mcpServers !== undefined && !Array.isArray(params.mcpServers)) {
       throw new RequestError(-32602, 'mcpServers must be an array');
     }
+    // Fail fast on malformed entries before creating anything.
+    validateMcpServers(params?.mcpServers);
 
     const launch = extractLaunchConfig(params);
     const discovery = await this.getDiscovery();
@@ -359,6 +444,9 @@ export class AgySessionCore {
 
     this.applyCatalogDefaults(session, discovery);
     this.sessions.set(sessionId, session);
+    // Register MCP servers BEFORE warmup spawns agy, so the fresh process
+    // lists their tools from the first turn.
+    await this.applySessionMcpServers(sessionId, params?.mcpServers);
     this.persistSession(session);
     // Connect-time warm-up: pull agy up now so first prompt doesn't pay cold spawn.
     this.warmupSession(sessionId);
@@ -402,14 +490,11 @@ export class AgySessionCore {
       }
     }
 
-    if (params?.mcpServers !== undefined) {
-      if (!Array.isArray(params.mcpServers)) {
-        throw new RequestError(-32602, 'mcpServers must be an array');
-      }
-      if (params.mcpServers.length > 0) {
-        throw new RequestError(-32602, 'mcpServers are not supported by this agent');
-      }
+    if (params?.mcpServers !== undefined && !Array.isArray(params.mcpServers)) {
+      throw new RequestError(-32602, 'mcpServers must be an array');
     }
+    // Fail fast on malformed entries (same rules as session/new).
+    validateMcpServers(params?.mcpServers);
 
     let additionalDirectories: string[] = [];
     if (params?.additionalDirectories !== undefined) {
@@ -507,6 +592,10 @@ export class AgySessionCore {
 
     const discovery = await this.getDiscovery();
     this.applyCatalogDefaults(session, discovery);
+    // Reconcile MCP servers (idempotent add). Unlike the old hard error,
+    // resume with servers now works — this is what keeps memory continuous
+    // across reconnects instead of forcing session/new.
+    await this.applySessionMcpServers(sessionId, params?.mcpServers);
     // Backfill list titles for pre-title sessions from their history journal
     // (first user prompt). One cheap read, once per session lifetime.
     if (!session.title) {
@@ -733,6 +822,16 @@ export class AgySessionCore {
 
     this.sessionStore.delete(sessionId);
     this.historyStore.delete(sessionId);
+    // Remove MCP servers this session registered, but only when no other
+    // live session references them. Best-effort: warnings, never throws.
+    try {
+      const freed = this.untrackMcpServers(sessionId);
+      if (freed.length) {
+        await removeMcpServers(resolveAgyBin(), freed, this.mcpRunner);
+      }
+    } catch (err) {
+      console.warn(`[ACP-MCP] cleanup after delete ${sessionId} failed: ${(err as Error)?.message || err}`);
+    }
     return {};
   }
 

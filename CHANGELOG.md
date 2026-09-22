@@ -1,3 +1,20 @@
+## v0.1.15 — MCP passthrough (session/new|resume → `agy mcp add`) (2026-09-23)
+
+- `session/new` accepts standard ACP `mcpServers` (stdio + http) and registers
+  each via `agy mcp add` BEFORE the session process spawns, so tools list
+  from the first turn. Any registration failure is a loud `-32603` (never a
+  silent tools-less session). `sse`/`acp` transports fail fast (no CLI
+  equivalent).
+- `session/resume` with non-empty `mcpServers` now reconciles (idempotent)
+  instead of `-32602`, so reconnects keep memory instead of forcing new.
+- `session/delete` removes the servers the session registered (refcounted
+  across sessions, best-effort warnings). `close` keeps config by design.
+- Permissions stay under the session safety policy (`autonomous` default =
+  `--dangerously-skip-permissions` + `--sandbox`); headless soft-denies keep
+  reporting `permissions.allow` guidance.
+
+---
+
 ## v0.1.13 — thin npm package: bunx-first like codex (2026-09-22)
 
 - The 95MB compiled `agy-acp-win-x64.exe` is OUT of the npm tarball

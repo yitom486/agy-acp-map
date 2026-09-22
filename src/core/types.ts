@@ -6,7 +6,7 @@ import type { SoftDenyInfo } from '../lib/soft-deny.ts';
 export const AGENT_INFO = {
   name: 'agy-acp',
   title: 'agy ACP (stream-json)',
-  version: '0.1.14',
+  version: '0.1.16',
 };
 
 export const BRIDGE_CAPABILITIES = {
@@ -109,6 +109,8 @@ export interface SdkSession {
   disableSlashCommands?: boolean;
   printTimeout?: string;
   deleted?: boolean;
+  /** MCP servers this session registered (tracked for delete-time cleanup). */
+  mcpServers?: Array<{ name: string }>;
 }
 
 /**
