@@ -767,5 +767,22 @@ describe('Simulated Integration Tests (Offline Mock CLI)', () => {
       expect(row?.title).toContain('Backfill title prompt here');
       await v1Service.deleteSession({ sessionId: sid });
     });
+
+    test('shutdown kills live agy children so no orphans pin the install dir', async () => {
+      const service = new AgyAcpService();
+      const cwd = testCwd;
+      const { sessionId } = await service.newSession({ cwd });
+      await service.promptSession(
+        { sessionId, prompt: [{ type: 'text', text: 'shutdown probe' }] },
+        () => {},
+      );
+      const session = service.core.sessions.get(sessionId)!;
+      expect(session.proc.isWritable()).toBe(true);
+
+      await service.shutdown();
+      expect(session.proc.isWritable()).toBe(false);
+      expect(session.proc.isAlive()).toBe(false);
+      await service.deleteSession({ sessionId });
+    });
   });
 });

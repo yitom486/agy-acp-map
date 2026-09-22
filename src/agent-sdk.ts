@@ -102,6 +102,11 @@ export class AgyAcpService {
     this.core.cancelSession(params);
   }
 
+  /** Kill every live agy child (bridge shutdown path; see sdk-server.ts). */
+  async shutdown(): Promise<void> {
+    await this.core.shutdown();
+  }
+
   promptSession(
     params: any,
     notifyClient: (update: any) => Promise<void> | void,

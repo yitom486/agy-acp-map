@@ -1,3 +1,12 @@
+## v0.1.9 — shutdown kills supervised children, no orphans (2026-09-22)
+
+- Bridge exit (`stdin` EOF, `SIGINT`, `SIGTERM`) now awaits
+  `service.shutdown()` so warmup/turn `agy` children never orphan and pin
+  the install directory (Windows EBUSY blocked on-demand updates).
+- `AgyAcpService.shutdown()` facade over the session core.
+
+---
+
 ## v0.1.8 — session list titles, incl. backfill (2026-09-22)
 
 - `session/list` rows carry `title` again (first user prompt, one line,
