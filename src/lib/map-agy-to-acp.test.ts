@@ -6,6 +6,7 @@ import {
   guessToolKind,
   buildAgyUserMessage,
   promptBlocksToText,
+  extractErrorDetail,
 } from './map-agy-to-acp.ts';
 import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
@@ -40,6 +41,32 @@ describe('mapper basics', () => {
     const n = resetTurnState(s);
     expect(n.conversationId).toBe('c1');
     expect(n.turnDone).toBe(false);
+  });
+
+  test('extractErrorDetail probes likely carriers and caps length', () => {
+    expect(extractErrorDetail({})).toBe('');
+    expect(extractErrorDetail({ error: '429 RESOURCE_EXHAUSTED' })).toContain('429');
+    expect(extractErrorDetail({ message: 'boom', text: 'boom' })).toBe('boom');
+    const long = extractErrorDetail({ error: 'x'.repeat(500) });
+    expect(long.length).toBeLessThanOrEqual(301);
+  });
+
+  test('error_message steps surface visibly with retry count', () => {
+    let state = createMapperState();
+    const evt = (i: number) => ({
+      event: 'step_update',
+      step_update: { step_index: i, state: 'DONE', step_type: 'error_message', error: '429 slow down' },
+    });
+    const r1 = mapAgyEvent('s1', evt(2), state);
+    expect(r1.notifications.length).toBe(1);
+    const u1: any = (r1.notifications[0] as any).params?.update;
+    expect(u1.sessionUpdate).toBe('agent_message_chunk');
+    expect(u1.content.text).toContain('第 1 次');
+    expect(r1.state.retryCount).toBe(1);
+    const r2 = mapAgyEvent('s1', evt(3), r1.state);
+    const u2: any = (r2.notifications[0] as any).params?.update;
+    expect(u2.content.text).toContain('第 2 次');
+    expect(r2.state.retryCount).toBe(2);
   });
 });
 

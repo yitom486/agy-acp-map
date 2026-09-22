@@ -1,3 +1,16 @@
+## v0.1.12 — surface agy error_message retries visibly (2026-09-22)
+
+- `step_type: error_message` (model-side failures while agy retries, e.g.
+  rate limits) now emits a visible `agent_message_chunk` (“第 N 次尝试遇到
+  问题，正在重试…（原因）”) instead of silence. Slow turns caused by
+  backend retries no longer look like a hung bridge; the cause travels with
+  the turn. (`extractErrorDetail` probes error/message/text/description.)
+- NOTE: model-side slowness itself (retries, quotas) is upstream agy/CLI
+  behavior, not bridge overhead — the bridge forwards every line in
+  milliseconds (see `[ACP-PROC] writeLine` vs `stdout line received`).
+
+---
+
 ## v0.1.11 — fix boot self-kill; loud wire harness (2026-09-22)
 
 - **Critical fix**: `AgentApp.connect()` only wires the transport and returns

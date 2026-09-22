@@ -30,6 +30,8 @@ export interface MapperState {
   emittedTextDelta?: boolean;
   /** True when at least one agent_response thought_delta was emitted this turn. */
   emittedThoughtDelta?: boolean;
+  /** Model-side retries seen this turn (error_message steps surfaced visibly). */
+  retryCount?: number;
   /** Session roots for image allowlist (set by server). */
   richRoots?: FileToAcpImageOpts;
 }
@@ -55,6 +57,7 @@ export function createMapperState(richRoots?: FileToAcpImageOpts): MapperState {
     emittedImageUris: new Set(),
     emittedTextDelta: false,
     emittedThoughtDelta: false,
+    retryCount: 0,
     richRoots,
   };
 }
@@ -73,6 +76,7 @@ export function resetTurnState(state: MapperState): MapperState {
     emittedImageUris: new Set(),
     emittedTextDelta: false,
     emittedThoughtDelta: false,
+    retryCount: 0,
   };
 }
 
@@ -253,6 +257,33 @@ function extractThought(s: Record<string, unknown>): string | undefined {
     if (typeof c === 'string' && c.length > 0) return c;
   }
   return undefined;
+}
+
+/**
+ * Pull a human-readable cause out of an error_message step. agy field names
+ * vary by failure kind, so probe the likely carriers and cap the length.
+ */
+export function extractErrorDetail(s: Record<string, unknown>, maxLen = 300): string {
+  const seen = new Set<string>();
+  const parts: string[] = [];
+  const candidates = [
+    s.error,
+    s.message,
+    s.text,
+    (s as any).description,
+    (s as any).reason,
+    (s.error_info as any)?.message,
+  ];
+  for (const c of candidates) {
+    if (typeof c !== 'string') continue;
+    const t = c.replace(/\s+/g, ' ').trim();
+    if (!t || seen.has(t)) continue;
+    seen.add(t);
+    parts.push(t);
+    if (parts.join(' | ').length >= maxLen) break;
+  }
+  const joined = parts.join(' | ');
+  return joined.length > maxLen ? joined.slice(0, maxLen) + '…' : joined;
 }
 
 /** Format or adapt updates according to client ACP protocol version (v1 vs v2). */
@@ -445,6 +476,27 @@ export function mapAgyEvent(
     const stepState = s.state; // ACTIVE | DONE | ERROR | ...
 
     if (stepType === 'user_input') {
+      return { notifications, state };
+    }
+
+    // Model-side failures (rate limits, backend errors) arrive as
+    // error_message steps while agy retries. Surface each one visibly so a
+    // slow turn never looks like a hung bridge ("正在思考…" with no context).
+    if (stepType === 'error_message') {
+      const detail = extractErrorDetail(s);
+      if (detail) {
+        state.retryCount = (state.retryCount ?? 0) + 1;
+        notifications.push(
+          notify(sessionId, {
+            sessionUpdate: 'agent_message_chunk',
+            messageId: `msg_agent_retry_${stepIndex}_${Date.now()}`,
+            content: {
+              type: 'text',
+              text: `\n> 第 ${state.retryCount} 次尝试遇到问题，正在重试…（${detail}）\n`,
+            },
+          }),
+        );
+      }
       return { notifications, state };
     }
 
