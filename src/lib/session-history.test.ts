@@ -41,6 +41,20 @@ describe('SessionHistoryStore', () => {
     expect(records[0].role).toBe('user');
   });
 
+  test('marks interrupted turns partial, keeps success turns unmarked', () => {
+    const store = new SessionHistoryStore(directory);
+    store.appendTurn('session-p1', 'Stopped question', 'Half an an', { partial: true });
+    store.appendTurn('session-p2', 'Full question', 'Complete answer.');
+
+    const partial = store.read('session-p1');
+    expect(partial.map((r) => r.role)).toEqual(['user', 'assistant']);
+    expect(partial[1].text).toBe('Half an an');
+    expect(partial[1].partial).toBe(true);
+
+    const full = store.read('session-p2');
+    expect(full[1].partial).toBeUndefined();
+  });
+
   test('deletes one session file without affecting another session', () => {
     const store = new SessionHistoryStore(directory);
     store.appendTurn('session-3', 'Keep this', 'Kept');

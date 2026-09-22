@@ -202,7 +202,30 @@ rl.on('line', (line) => {
         return;
       }
 
-      // 5. Scenario: Delayed emission for cancellation tests
+      // 5. Scenario: Hard error mid-turn (partial text, then ERROR result)
+      if (userText.includes('[test:hard_error]')) {
+        console.log(JSON.stringify({ event: 'init', conversation_id: convId }));
+        console.log(JSON.stringify({
+          event: 'step_update',
+          step_update: {
+            step_index: 1,
+            step_type: 'agent_response',
+            state: 'ACTIVE',
+            text_delta: 'Partial output before failure...',
+          },
+        }));
+        console.log(JSON.stringify({
+          event: 'result',
+          result: {
+            status: 'ERROR',
+            error: 'mock upstream failure',
+            conversation_id: convId,
+          },
+        }));
+        return;
+      }
+
+      // 6. Scenario: Delayed emission for cancellation tests
       if (userText.includes('[test:cancel_delay]')) {
         console.log(JSON.stringify({ event: 'init', conversation_id: convId }));
         console.log(JSON.stringify({

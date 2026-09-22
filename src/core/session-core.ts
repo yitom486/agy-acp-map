@@ -223,10 +223,16 @@ export class AgySessionCore {
     eligible = true,
   ): void {
     try {
+      // Display/persist parity: persist whenever the client saw text — even
+      // for cancelled/failed turns (marked partial) — so session/load replay
+      // shows exactly what was on screen. Only truly empty answers are
+      // omitted (they would become fake answers on reload).
+      const partial = stopReason === 'cancelled' || !eligible;
       this.historyStore.appendTurn(
         sessionId,
         userText,
-        eligible && stopReason !== 'cancelled' ? assistantText : undefined,
+        assistantText,
+        partial ? { partial: true } : undefined,
       );
     } catch (err) {
       // History is a display cache. A write failure must never break the ACP turn.

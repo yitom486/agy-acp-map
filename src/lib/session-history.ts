@@ -10,6 +10,11 @@ import { randomUUID } from 'node:crypto';
  * only stores the text that an ACP client can display: user prompts and final
  * assistant text. Tool calls, tool output, thoughts, and internal events are
  * deliberately excluded.
+ *
+ * Display/persist parity: whatever text the client actually saw must be
+ * reloadable. Interrupted turns (cancelled / failed) still persist their
+ * partial text, marked with `partial: true`, so `session/load` replay shows
+ * exactly what was on screen instead of dropping the turn entirely.
  */
 export type SessionHistoryRole = 'user' | 'assistant';
 
@@ -20,6 +25,12 @@ export type SessionHistoryRecord = {
   role: SessionHistoryRole;
   text: string;
   createdAt: string;
+  /**
+   * True when the turn did not complete (cancelled / failed) and `text` is
+   * only the partial output the client saw. Replay ignores the flag and
+   * returns the text; readers must tolerate its absence (old journals).
+   */
+  partial?: boolean;
 };
 
 export function resolveHistoryDir(
@@ -72,12 +83,19 @@ export class SessionHistoryStore {
   }
 
   /**
-   * Append one completed turn as two JSONL records.
+   * Append one completed (or interrupted) turn as JSONL records.
    *
-   * The assistant record is omitted when the turn produced no visible final
-   * text. This keeps cancelled/error-only turns from becoming fake answers.
+   * The assistant record is written whenever the turn produced visible text —
+   * including cancelled/failed turns (`partial: true`). Only a truly empty
+   * assistant answer is omitted, so cancelled/error-only turns never become
+   * fake answers, while partial output stays reloadable.
    */
-  appendTurn(sessionId: string, userText: string, assistantText?: string): void {
+  appendTurn(
+    sessionId: string,
+    userText: string,
+    assistantText?: string,
+    opts?: { partial?: boolean },
+  ): void {
     const records: SessionHistoryRecord[] = [];
     const now = new Date().toISOString();
 
@@ -100,6 +118,7 @@ export class SessionHistoryStore {
         role: 'assistant',
         text: assistantText,
         createdAt: new Date().toISOString(),
+        ...(opts?.partial ? { partial: true } : {}),
       });
     }
 

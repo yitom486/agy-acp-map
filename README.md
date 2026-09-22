@@ -64,6 +64,21 @@ bun run smoke:all                 # units + full live matrix
 
 **Windows:** install [Bun](https://bun.sh), put `agy` on `PATH`, then the same commands.
 
+## Run via bunx / npx (no install, codex-style)
+
+The npm tarball is thin (~5MB: `dist/bin.js` + `dist/agy-headless.exe`, no runtime
+needed beyond node/bun). First run downloads `@latest` into the runner cache,
+later runs reuse it:
+
+```powershell
+bunx @yitom/agy-acp-map@latest        # bun users (preferred: no prompt, no shim flash)
+npx -y @yitom/agy-acp-map@latest      # node users
+```
+
+Requirements are the same as source runs: a logged-in `agy` on `PATH`. The
+optional 95MB single-file `agy-acp-win-x64.exe` is **not** in the npm package —
+grab it from GitHub Releases if you want zero-runtime distribution.
+
 
 ## Launch flags / 启动参数 (v0.1.2)
 
