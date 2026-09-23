@@ -1,3 +1,17 @@
+## v0.1.17 — resume re-registers MCP; live smokes in the default matrix (2026-09-23)
+
+- First publish since v0.1.13: ships the whole 0.1.14–0.1.16 batch (thin
+  npm, full-permission default, MCP passthrough + argv hardening).
+- New live e2e `smoke:mcp-resume` (no model turn, no login): new registers
+  → config wiped underneath → resume re-registers (visible in
+  `agy mcp list`) → delete cleans up. Proves every reattach path carries
+  MCP, not just `session/new`.
+- `smoke:all` now starts with the login-free MCP smokes (`smoke:mcp`,
+  `smoke:mcp-resume`) so real-CLI coverage runs before the model-burning
+  matrix.
+
+---
+
 ## v0.1.16 — full permissions by default; MCP argv + verify hardening (2026-09-23)
 
 - Default safety tier is now `autonomous-unsandboxed`: full permissions, no
