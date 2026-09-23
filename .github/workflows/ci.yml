@@ -53,7 +53,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
       id-token: write
     steps:
       - name: Checkout repository
@@ -84,20 +84,10 @@ jobs:
           # Cross-compile the GUI shim on Linux so published packages ship it.
           AGY_HEADLESS_CROSS: '1'
 
-      - name: Build Windows single-file exe (codex-style, no runtime needed)
-        run: bun run build:exe
-
       - name: Publish to NPM
         run: npm publish --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Upload Windows exe to GitHub Release
-        run: |
-          gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --generate-notes 2>/dev/null || true
-          gh release upload "${GITHUB_REF_NAME}" release/agy-acp-win-x64.exe --clobber
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Dump bridge file-log on failure (wire-e2e triage)
         if: failure()

@@ -1,3 +1,14 @@
+## v0.1.18 — exe gone: bunx-only distribution (2026-09-23)
+
+- The compiled single-file `agy-acp-win-x64.exe` is deleted, not moved:
+  `build:exe` script removed, CI no longer builds/uploads it, and the asset
+  was removed from all existing GitHub Releases. codex-style `bunx`/`npx`
+  is now the only distribution; no test or source file referenced the exe
+  (verified by repo-wide search), so nothing else changes.
+- The tiny `agy-headless.exe` launcher stays (zero-flash chain needs it).
+
+---
+
 ## v0.1.17 — resume re-registers MCP; live smokes in the default matrix (2026-09-23)
 
 - First publish since v0.1.13: ships the whole 0.1.14–0.1.16 batch (thin

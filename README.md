@@ -75,9 +75,10 @@ bunx @yitom/agy-acp-map@latest        # bun users (preferred: no prompt, no shim
 npx -y @yitom/agy-acp-map@latest      # node users
 ```
 
-Requirements are the same as source runs: a logged-in `agy` on `PATH`. The
-optional 95MB single-file `agy-acp-win-x64.exe` is **not** in the npm package —
-grab it from GitHub Releases if you want zero-runtime distribution.
+Requirements are the same as source runs: a logged-in `agy` on `PATH`.
+There is no compiled single-file exe anymore — codex-style `bunx`/`npx`
+is the only distribution (the npm tarball is ~5MB: `dist/bin.js` plus the
+tiny `agy-headless.exe` launcher).
 
 
 ## Launch flags / 启动参数 (v0.1.2)
@@ -329,9 +330,7 @@ Engineering feasibility ≠ legal permission. 即便只用官方 CLI I/O，仍�
 ## Zed via npm (global install) / Zed 全局安装用法
 
 No Bun / TypeScript needed at runtime — the published package ships compiled
-`dist/` artifacts (`bin.js` for Node, `agy-headless.exe`). The optional
-single-file `agy-acp-win-x64.exe` (no runtime needed) is a GitHub Release
-asset, not part of the npm tarball. A **global** install is recommended so Zed
+`dist/` artifacts (`bin.js` for Node, `agy-headless.exe`). A **global** install is recommended so Zed
 gets a stable absolute path (repo moves would break a local path):
 
 ```powershell
