@@ -136,12 +136,16 @@ export function validateMcpServers(input: unknown): NormalizedMcpServer[] {
  * Build `agy mcp add` argv. agy rejects flags placed after <name>, so all
  * flags come first: mcp add [--env K=V] [--header K:V] [--type t] <name>
  * <commandOrUrl> [args...].
+ * stdio ALWAYS inserts `--` after <name>: agy consumes a global `--version`
+ * (and may misparse other dash-args) even in post-positional slots, which
+ * exits 0 while registering nothing (verified against agy 1.2.8). `--` ends
+ * flag parsing so command/args pass through verbatim.
  */
 export function mcpServerToAgyAddArgs(s: NormalizedMcpServer): string[] {
   const argv = ['mcp', 'add'];
   if (s.kind === 'stdio') {
     for (const e of s.env) argv.push('--env', `${e.name}=${e.value}`);
-    argv.push(s.name, s.command as string, ...s.args);
+    argv.push(s.name, '--', s.command as string, ...s.args);
     return argv;
   }
   for (const h of s.headers) argv.push('--header', `${h.name}: ${h.value}`);
@@ -197,6 +201,9 @@ function tail(text: string, n = 600): string {
  * Register every server via `agy mcp add` (idempotent: add == upsert).
  * Any failure throws RequestError — a client that asked for MCP must never
  * get a silent tools-less session.
+ * Verify-after-add: agy exits 0 while registering NOTHING when argv contains
+ * its global flags (`--version`/`--help` are swallowed even after `--`),
+ * so every add is confirmed via `mcp list`. Absent-after-add throws loud.
  */
 export async function syncMcpServers(
   bin: string,
@@ -222,6 +229,28 @@ export async function syncMcpServers(
       );
     }
     added.push(s.name);
+  }
+  if (added.length) {
+    let listed = '';
+    try {
+      const lr = await runFn(bin, ['mcp', 'list'], { timeoutMs });
+      listed = String(lr.stdout ?? '');
+    } catch (err) {
+      throw new RequestError(
+        -32603,
+        `registered MCP server(s) [${added.join(', ')}] but 'mcp list' verification failed: ${(err as Error)?.message || err}`,
+      );
+    }
+    const lines = listed.split('\n');
+    const missing = added.filter((n) => !lines.some((ln) => ln.includes(n)));
+    if (missing.length) {
+      throw new RequestError(
+        -32603,
+        `MCP server(s) [${missing.join(', ')}] exited 0 on 'mcp add' but are absent from 'mcp list' ` +
+          `(agy swallows its global --version/--help flags even after '--'; check server args). ` +
+          `List tail: ${tail(listed, 300)}`,
+      );
+    }
   }
   return { added };
 }

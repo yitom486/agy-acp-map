@@ -48,6 +48,8 @@
     "smoke:permissions": "bun tests/smoke/smoke-permissions.ts",
     "smoke:image-in": "bun tests/smoke/smoke-image-in.ts",
     "smoke:image-out": "bun tests/smoke/smoke-image-out.ts",
+    "smoke:mcp": "bun tests/smoke/smoke-mcp.ts",
+    "smoke:mcp-e2e": "bun tests/smoke/smoke-mcp-e2e.ts",
     "smoke:robustness": "bun tests/smoke/smoke-robustness.ts",
     "smoke:all": "bun test src/lib && bun tests/test-agy-args.ts && bun tests/smoke/smoke-basic.ts && bun tests/smoke/smoke-flags.ts && bun tests/smoke/smoke-permissions.ts && bun tests/smoke/smoke-image-in.ts && bun tests/smoke/smoke-image-out.ts && bun tests/smoke/smoke-robustness.ts"
   },

@@ -1,3 +1,24 @@
+## v0.1.16 — full permissions by default; MCP argv + verify hardening (2026-09-23)
+
+- Default safety tier is now `autonomous-unsandboxed`: full permissions, no
+  `--sandbox` (previously `autonomous` = skip-permissions + sandbox, which
+  let agy soft-deny `run_command`). Explicit `safety: autonomous` still gets
+  sandbox containment; a defaulted tier honors explicit `sandbox: true` /
+  `AGY_ACP_SANDBOX=1` opt-in (the UI sandbox toggle keeps working).
+- `mcp add` argv now inserts `--` after `<name>` (stdio): agy rejects or
+  silently swallows dash-leading command/args otherwise (verified vs real
+  `agy mcp add --help` on 1.2.8).
+- Verify-after-add: every `mcp add` (exit 0) is confirmed via `mcp list`;
+  absent-after-add throws loud `-32603` (agy exits 0 while registering
+  nothing when args contain its global `--version`/`--help` flags — found by
+  the new live smoke, would otherwise be a silent tools-less session).
+- New live smoke `bun run smoke:mcp` (add → list → remove → gone) against
+  the REAL agy CLI with try/finally config cleanup; ACP-spec untagged stdio
+  shape audited against `@agentclientprotocol/sdk` (`McpServerStdio` has no
+  `type` tag; `sse`/`acp` correctly fail fast — agy has no equivalent).
+
+---
+
 ## v0.1.15 — MCP passthrough (session/new|resume → `agy mcp add`) (2026-09-23)
 
 - `session/new` accepts standard ACP `mcpServers` (stdio + http) and registers

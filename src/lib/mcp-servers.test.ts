@@ -11,7 +11,7 @@ import {
 const okRun: McpRunFn = async () => ({ status: 0, stdout: 'ok', stderr: '' });
 
 describe('mcp-servers mapping (ACP -> agy mcp add)', () => {
-  test('stdio maps command/args/env with flags before the name', () => {
+  test('stdio maps command/args/env with flags before the name and -- after it', () => {
     const [s] = validateMcpServers([
       {
         name: 'lumina',
@@ -26,6 +26,7 @@ describe('mcp-servers mapping (ACP -> agy mcp add)', () => {
       '--env',
       'PORT=3801',
       'lumina',
+      '--',
       'node',
       'server.js',
       '--port',
@@ -90,7 +91,16 @@ describe('mcp-servers mapping (ACP -> agy mcp add)', () => {
 
   test('sync success returns added names; failure throws with server + log', async () => {
     const [s] = validateMcpServers([{ name: 'lumina', command: 'node' }]);
-    const res = await syncMcpServers('agy', [s], okRun);
+    // Stateful stub emulating agy: list reflects prior adds.
+    const registered = new Set<string>();
+    const stateful: McpRunFn = async (_bin, args) => {
+      if (args[1] === 'list') {
+        return { status: 0, stdout: [...registered].join('\n'), stderr: '' };
+      }
+      registered.add('lumina');
+      return { status: 0, stdout: 'ok', stderr: '' };
+    };
+    const res = await syncMcpServers('agy', [s], stateful);
     expect(res).toEqual({ added: ['lumina'] });
 
     const bad: McpRunFn = async () => ({ status: 1, stdout: '', stderr: 'boom' });
@@ -100,6 +110,18 @@ describe('mcp-servers mapping (ACP -> agy mcp add)', () => {
       throw new Error('spawn ENOENT');
     };
     await expect(syncMcpServers('agy', [s], threw)).rejects.toThrow(/spawn ENOENT/);
+  });
+
+  test('sync verifies via list: exit-0-but-absent throws loud', async () => {
+    const [s] = validateMcpServers([{ name: 'ghost', command: 'node' }]);
+    // add exits 0 yet list stays empty (agy swallowing --version-style args).
+    const lying: McpRunFn = async (_bin, args) => {
+      if (args[1] === 'list') return { status: 0, stdout: 'No MCP servers configured.', stderr: '' };
+      return { status: 0, stdout: 'ok', stderr: '' };
+    };
+    await expect(syncMcpServers('agy', [s], lying)).rejects.toThrow(
+      /absent from 'mcp list'/,
+    );
   });
 
   test('remove is best-effort: warnings, never throws', async () => {

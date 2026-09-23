@@ -40,8 +40,24 @@ describe('MCP session lifecycle (fake agy mcp runner)', () => {
   let originalWarmup: string | undefined;
 
   const calls: Array<{ bin: string; args: string[] }> = [];
+  // Stateful agy emulation: `mcp list` reflects prior adds/removes so the
+  // bridge's verify-after-add passes like against the real CLI.
+  const registered = new Set<string>();
   const fakeRunner: McpRunFn = async (bin, args) => {
     calls.push({ bin, args });
+    if (args[1] === 'list') {
+      return { status: 0, stdout: [...registered].map((n) => `${n}  stdio  enabled  cmd`).join('\n'), stderr: '' };
+    }
+    if (args[1] === 'add') {
+      const dash = args.indexOf('--');
+      const name = dash >= 0 ? args[dash - 1] : args[args.length - 2];
+      registered.add(name);
+      return { status: 0, stdout: `Added MCP server "${name}" (stdio)`, stderr: '' };
+    }
+    if (args[1] === 'remove') {
+      registered.delete(args[2]);
+      return { status: 0, stdout: 'ok', stderr: '' };
+    }
     return { status: 0, stdout: 'ok', stderr: '' };
   };
 
@@ -114,6 +130,7 @@ describe('MCP session lifecycle (fake agy mcp runner)', () => {
       '--env',
       'LUMINA_PORT=3801',
       'lumina',
+      '--',
       'node',
       'mcp-server.js',
     ]);
@@ -127,12 +144,17 @@ describe('MCP session lifecycle (fake agy mcp runner)', () => {
       'web',
       'https://example.com/mcp',
     ]);
-    // Flags precede <name> or agy rejects the invocation.
+    // Option flags (--env/--header/--type) must precede <name>; the `--`
+    // separator ends flag parsing so command/args pass through verbatim.
     for (const a of adds) {
       const nameIdx = a.args.indexOf('lumina') >= 0 ? a.args.indexOf('lumina') : a.args.indexOf('web');
       for (const [i, tok] of a.args.entries()) {
-        if (tok.startsWith('--')) expect(i).toBeLessThan(nameIdx);
+        if (i < nameIdx) {
+          if (tok.startsWith('--')) expect(['--env', '--header', '--type']).toContain(tok);
+        }
       }
+      // stdio form carries the `--` separator right after <name>.
+      if (a.args.includes('lumina')) expect(a.args[nameIdx + 1]).toBe('--');
     }
     expect(core.sessions.get(sessionId)?.mcpServers).toEqual([{ name: 'lumina' }, { name: 'web' }]);
 

@@ -16,11 +16,11 @@ import {
 } from './agy-args.ts';
 
 describe('buildAgyArgs', () => {
-  test('first spawn omits --conversation; autonomous defaults', () => {
+  test('first spawn omits --conversation; unsandboxed defaults (full permissions)', () => {
     const args = buildAgyArgs({ cwd: '/tmp/proj' }, {});
     expect(args.includes('--conversation')).toBe(false);
     expect(args.includes('--dangerously-skip-permissions')).toBe(true);
-    expect(args.includes('--sandbox')).toBe(true);
+    expect(args.includes('--sandbox')).toBe(false);
     expect(args.includes('--disable-slash-commands')).toBe(true);
     expect(args[args.indexOf('--print-timeout') + 1]).toBe('0');
     expect(args.slice(0, 6)).toEqual([
@@ -146,11 +146,11 @@ describe('resolveSafety three tiers', () => {
     expect(SAFETY_TIERS).toEqual(['safe', 'autonomous', 'autonomous-unsandboxed']);
   });
 
-  test('autonomous (default): skip + sandbox', () => {
+  test('autonomous-unsandboxed (default): skip, no sandbox', () => {
     expect(resolveSafety({}, {})).toEqual({
-      safety: 'autonomous',
+      safety: 'autonomous-unsandboxed',
       skipPermissions: true,
-      sandbox: true,
+      sandbox: false,
     });
     expect(resolveSafety({ safety: 'safe' }, {})).toEqual({
       safety: 'safe',
@@ -214,6 +214,14 @@ describe('resolveSafety three tiers', () => {
     });
   });
 
+  test('defaulted unsandboxed tier honors explicit sandbox opt-in', () => {
+    expect(resolveSafety({ sandbox: true }, {}).sandbox).toBe(true);
+    expect(resolveSafety({}, { AGY_ACP_SANDBOX: '1' }).sandbox).toBe(true);
+    expect(resolveSafety({}, { AGY_ACP_SANDBOX: '1' }).safety).toBe(
+      'autonomous-unsandboxed',
+    );
+  });
+
   test('aliases: auto / unsandboxed / autonomous_unsandboxed', () => {
     expect(normalizeSafety('auto')).toBe('autonomous');
     expect(normalizeSafety('unsandboxed')).toBe('autonomous-unsandboxed');
@@ -227,16 +235,16 @@ describe('resolveSafety three tiers', () => {
     );
   });
 
-  test('AGY_ACP_SKIP_PERMISSIONS≈autonomous/safe only when safety unset', () => {
+  test('AGY_ACP_SKIP_PERMISSIONS≈unsandboxed/safe only when safety unset', () => {
     expect(resolveSafety({}, { AGY_ACP_SKIP_PERMISSIONS: '1' })).toEqual({
-      safety: 'autonomous',
+      safety: 'autonomous-unsandboxed',
       skipPermissions: true,
-      sandbox: true,
+      sandbox: false,
     });
     expect(resolveSafety({}, {})).toEqual({
-      safety: 'autonomous',
+      safety: 'autonomous-unsandboxed',
       skipPermissions: true,
-      sandbox: true,
+      sandbox: false,
     });
     expect(resolveSafety({}, { AGY_ACP_SKIP_PERMISSIONS: '0' })).toEqual({
       safety: 'safe',
@@ -281,7 +289,7 @@ describe('resolveSafety three tiers', () => {
     expect(resolveSkipPermissions({}, {})).toBe(true);
     expect(resolveSkipPermissions({ safety: 'autonomous' }, {})).toBe(true);
     expect(resolveSkipPermissions({ safety: 'autonomous-unsandboxed' }, {})).toBe(true);
-    expect(resolveSandbox({}, {})).toBe(true);
+    expect(resolveSandbox({}, {})).toBe(false);
     expect(resolveSandbox({ safety: 'autonomous' }, {})).toBe(true);
     expect(resolveSandbox({ safety: 'safe' }, {})).toBe(false);
     expect(resolveSandbox({ safety: 'autonomous-unsandboxed' }, {})).toBe(false);

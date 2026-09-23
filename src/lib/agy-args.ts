@@ -205,29 +205,33 @@ export type SafetyResolveInput = {
  *
  * Tiers:
  *   safe                        — no skip-permissions; sandbox only if explicitly true
- *   autonomous (default)        — skip-permissions; default --sandbox unless sandbox:false
- *   autonomous-unsandboxed      — skip-permissions; NEVER --sandbox
+ *   autonomous                  — skip-permissions; default --sandbox unless sandbox:false
+ *                                 (opt-in containment; explicit safety/autonomous only)
+ *   autonomous-unsandboxed      — skip-permissions; NEVER --sandbox (the default:
+ *                                 full permissions, no terminal restrictions)
  *
  * Inputs:
  *   session.safety / AGY_ACP_SAFETY
- *   AGY_ACP_SKIP_PERMISSIONS=0 ≈ safe if safety unset; otherwise autonomous
+ *   AGY_ACP_SKIP_PERMISSIONS=0 ≈ safe if safety unset; otherwise autonomous-unsandboxed
  *   explicit session.skipPermissions overrides the skip flag only
- *   explicit session.sandbox / AGY_ACP_SANDBOX override sandbox except unsandboxed tier
+ *   explicit session.sandbox / AGY_ACP_SANDBOX override sandbox except when the
+ *   unsandboxed tier was explicitly selected (defaulted tier honors opt-in)
  */
 export function resolveSafety(
   session: SafetyResolveInput = {},
   env: NodeJS.ProcessEnv = process.env,
 ): ResolvedSafety {
-  let safety =
+  const explicitSafety =
     normalizeSafety(session.safety) ?? normalizeSafety(env.AGY_ACP_SAFETY) ?? undefined;
+  let safety = explicitSafety;
 
   if (!safety) {
     const envSkip = env.AGY_ACP_SKIP_PERMISSIONS;
     if (envSkip !== undefined && envSkip !== '') {
       const skip = !(envSkip === '0' || envSkip === 'false' || envSkip === 'no');
-      safety = skip ? 'autonomous' : 'safe';
+      safety = skip ? 'autonomous-unsandboxed' : 'safe';
     } else {
-      safety = 'autonomous';
+      safety = 'autonomous-unsandboxed';
     }
   }
 
@@ -238,10 +242,11 @@ export function resolveSafety(
   }
 
   let sandbox: boolean;
-  if (safety === 'autonomous-unsandboxed') {
-    // Explicit dangerous tier: never pass --sandbox
+  if (safety === 'autonomous-unsandboxed' && explicitSafety === 'autonomous-unsandboxed') {
+    // Explicit dangerous tier: never pass --sandbox, even if asked.
     sandbox = false;
   } else if (session.sandbox !== undefined) {
+    // Defaulted tier honors an explicit opt back into containment.
     sandbox = Boolean(session.sandbox);
   } else {
     const envSand = normalizeSandbox(env.AGY_ACP_SANDBOX);

@@ -1092,11 +1092,11 @@ export class AgySessionCore {
       };
 
       const safety = resolveSafety(session);
-      // Auto-pass contract: default autonomous must carry --dangerously-skip-permissions
+      // Auto-pass contract: default autonomous-unsandboxed must carry --dangerously-skip-permissions
       // so agy never opens an interactive/native permission prompt mid-turn.
       // Windows UAC popups come from the elevated command itself, never from this
-      // bridge (spawn uses windowsHide + piped stdio, no shell/runas) — keep
-      // --sandbox on to contain terminal side-effects.
+      // bridge (spawn uses windowsHide + piped stdio, no shell/runas) — no --sandbox
+      // by default (full permissions); set safety=autonomous to contain terminal side-effects.
       console.error(
         `[ACP-SDK] safety: sid: ${sessionId} safety=${safety.safety} skip=${safety.skipPermissions ? 1 : 0} sandbox=${safety.sandbox ? 1 : 0} warmed=${session.proc.isWritable() ? 1 : 0}`,
       );

@@ -240,7 +240,7 @@ export function formatSoftDenyMessage(denies: SoftDenyInfo[]): string {
     lines.push(bits.join(' '));
   }
   lines.push(
-    'Or set AGY_ACP_SAFETY=safe / AGY_ACP_SKIP_PERMISSIONS=0 to re-enable permission checks (autonomous + sandbox is the bridge default).',
+    'Or set AGY_ACP_SAFETY=safe / AGY_ACP_SKIP_PERMISSIONS=0 to re-enable permission checks (autonomous-unsandboxed — full permissions, no sandbox — is the bridge default; AGY_ACP_SAFETY=autonomous re-enables sandbox containment).',
   );
   if (denies.some((d) => d.source?.includes('sandbox'))) {
     lines.push(

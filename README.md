@@ -95,7 +95,7 @@ Configure on **`session/new`** (preferred) and/or env fallbacks. Stored on the S
 | `--sandbox` | `sandbox: true` | `AGY_ACP_SANDBOX=1` |
 | `--json-schema` | `jsonSchema` (string or object→stringify) | `AGY_ACP_JSON_SCHEMA` (string or path) |
 | `--conversation` | `conversationId` (resume / switch-model flow) | _(from prior turn)_ |
-| `--dangerously-skip-permissions` | `safety: 'autonomous' \| 'autonomous-unsandboxed'` or `skipPermissions: true` | `AGY_ACP_SAFETY=…` / `AGY_ACP_SKIP_PERMISSIONS=1` if safety unset (**default off / safe**) |
+| `--dangerously-skip-permissions` | `safety: 'autonomous' \| 'autonomous-unsandboxed'` or `skipPermissions: true` | `AGY_ACP_SAFETY=…` / `AGY_ACP_SKIP_PERMISSIONS=1` if safety unset (**default: skip on, unsandboxed**) |
 | `--disable-slash-commands` | `disableSlashCommands` (default **true**) | `AGY_ACP_DISABLE_SLASH_COMMANDS=0` to omit |
 | `--print-timeout` | `printTimeout` (e.g. `30m`, `120s`, `0`) | `AGY_ACP_PRINT_TIMEOUT` (default `0`) |
 
@@ -159,7 +159,7 @@ Display-history path: `~/.agy-acp-map/history/`. Override with `AGY_ACP_HISTORY_
 | Env | Default | Meaning |
 |-----|---------|---------|
 | `AGY_ACP_SAFETY` | `safe` | `safe` \| `autonomous` \| `autonomous-unsandboxed` (aliases: `unsandboxed`, `autonomous_unsandboxed`). See Safety modes table. |
-| `AGY_ACP_SKIP_PERMISSIONS` | `0` | If **safety unset**: `1` ≈ treat as `autonomous`; `0` ≈ `safe`. Explicit `AGY_ACP_SAFETY` / `session.safety` wins. |
+| `AGY_ACP_SKIP_PERMISSIONS` | `0` | If **safety unset**: `1` ≈ treat as `autonomous-unsandboxed`; `0` ≈ `safe`. Explicit `AGY_ACP_SAFETY` / `session.safety` wins. |
 | `AGY_ACP_DISABLE_SLASH_COMMANDS` | `1` | When `1` (default), pass `--disable-slash-commands`. Set `0` to omit. |
 | `AGY_ACP_PRINT_TIMEOUT` | `0` | Passed as `--print-timeout` (e.g. `30m`, `120s`, `0` = wait until turn completes). |
 | `AGY_BIN` | `agy` | Override binary |
@@ -167,7 +167,7 @@ Display-history path: `~/.agy-acp-map/history/`. Override with `AGY_ACP_HISTORY_
 | `AGY_ACP_EFFORT` | — | Default `--effort` |
 | `AGY_ACP_MODE` | — | Default `--mode` |
 | `AGY_ACP_AGENT` | — | Default `--agent` |
-| `AGY_ACP_SANDBOX` | — | `1`/`0` → force sandbox on/off for `safe`/`autonomous`. Ignored for `autonomous-unsandboxed` (never sandboxed). |
+| `AGY_ACP_SANDBOX` | — | `1`/`0` → force sandbox on/off for `safe`/`autonomous`/defaulted tier. Ignored only when `autonomous-unsandboxed` was explicitly selected. |
 | `AGY_ACP_JSON_SCHEMA` | — | Schema string or file path for `--json-schema` |
 | `AGY_ACP_KEEP_STAGING` | — | `1` → keep `.agy-acp-staging` files after turn/close (debug) |
 | `AGY_ACP_STORE` / `AGY_ACP_SESSION_STORE` | `~/.agy-acp-map/sessions.json` | Disk session index path (`SESSION_STORE` wins if both set) |
@@ -209,15 +209,15 @@ No interactive ACP permission UI — **launch strategies only** (`resolveSafety`
 
 | Mode / 模式 | Skip permissions / 跳过权限 | Sandbox / 沙箱 |
 |-------------|------------------------------|----------------|
-| **safe** (default) | no — rely on agy `settings.json` allow/deny + soft-deny messages | only if user sets `sandbox: true` / `AGY_ACP_SANDBOX=1` |
+| **safe** | no — rely on agy `settings.json` allow/deny + soft-deny messages | only if user sets `sandbox: true` / `AGY_ACP_SANDBOX=1` |
 | **autonomous** | yes (`--dangerously-skip-permissions`) | **default `--sandbox`** unless user sets `sandbox: false` / `AGY_ACP_SANDBOX=0` |
-| **autonomous-unsandboxed** (aliases: `autonomous_unsandboxed`, `unsandboxed`) | yes (`--dangerously-skip-permissions`) | **never** pass `--sandbox` (explicit dangerous tier; ignores sandbox overrides) |
+| **autonomous-unsandboxed** (default; aliases: `autonomous_unsandboxed`, `unsandboxed`) | yes (`--dangerously-skip-permissions`) | **never** when explicitly selected (ignores sandbox overrides); the defaulted tier honors explicit `sandbox: true` / `AGY_ACP_SANDBOX=1` |
 
 Accept via:
 - `session/new` field `safety`: `'safe' | 'autonomous' | 'autonomous-unsandboxed'`
 - env `AGY_ACP_SAFETY` (same values)
 - idle `session/set_config_option` with `configId: "safety"`
-- Backward compat: `AGY_ACP_SKIP_PERMISSIONS=1` ≈ `autonomous` **if safety unset**; `=0` ≈ `safe`
+- Backward compat: `AGY_ACP_SKIP_PERMISSIONS=1` ≈ `autonomous-unsandboxed` **if safety unset**; `=0` ≈ `safe`
 
 输入：`session/new.safety` / `AGY_ACP_SAFETY` / `set_config_option`；兼容 `AGY_ACP_SKIP_PERMISSIONS`（仅在未设 safety 时生效）。
 
