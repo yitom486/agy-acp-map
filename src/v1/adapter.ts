@@ -20,6 +20,10 @@ export class AgyAcpV1Service {
       agentCapabilities: {
         loadSession: true,
         sessionCapabilities: { close: {}, list: {}, resume: {} },
+        mcpCapabilities: {
+          http: true,
+          stdio: true,
+        },
       },
       authMethods: [],
     };

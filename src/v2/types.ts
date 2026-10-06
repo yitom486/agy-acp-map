@@ -3,4 +3,8 @@ export const V2_AGENT_CAPABILITIES = {
     additionalDirectories: {},
     delete: {},
   },
+  mcp: {
+    http: {},
+    stdio: {},
+  },
 };

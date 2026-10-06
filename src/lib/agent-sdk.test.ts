@@ -67,6 +67,7 @@ describe('AgyAcpService & SDK Agent', () => {
     expect(v1.agentCapabilities.loadSession).toBe(true);
     expect(v1.agentCapabilities.sessionCapabilities.resume).toEqual({});
     expect(v1.agentCapabilities.sessionCapabilities.close).toEqual({});
+    expect(v1.agentCapabilities.mcpCapabilities).toEqual({ http: true, stdio: true });
     expect(Array.isArray(v1.authMethods)).toBe(true);
     expect((v1 as any).capabilities).toBeUndefined();
 
@@ -74,6 +75,7 @@ describe('AgyAcpService & SDK Agent', () => {
     expect(v2.protocolVersion).toBe(2);
     expect(v2.info.name).toBe(AGENT_INFO.name);
     expect(v2.capabilities.session.additionalDirectories).toEqual({});
+    expect(v2.capabilities.mcp).toEqual({ http: {}, stdio: {} });
     expect((v2 as any).agentCapabilities).toBeUndefined();
   });
 
