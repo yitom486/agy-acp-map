@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { RequestError } from '@agentclientprotocol/sdk';
 
@@ -283,4 +285,108 @@ export async function removeMcpServers(
     console.warn(`[ACP-MCP] cleanup warnings: ${warnings.join(' | ')}`);
   }
   return { removed, warnings };
+}
+
+
+export interface WorkspaceMcpConfig {
+  mcpServers: Record<string, unknown>;
+}
+
+export function mcpServerToConfigEntry(s: NormalizedMcpServer): Record<string, unknown> {
+  if (s.kind === 'stdio') {
+    const entry: Record<string, unknown> = {
+      command: s.command,
+      args: s.args,
+    };
+    if (s.env && s.env.length > 0) {
+      entry.env = Object.fromEntries(s.env.map((e) => [e.name, e.value]));
+    }
+    return entry;
+  }
+  const entry: Record<string, unknown> = {
+    serverUrl: s.url,
+  };
+  if (s.headers && s.headers.length > 0) {
+    entry.headers = Object.fromEntries(s.headers.map((h) => [h.name, h.value]));
+  }
+  return entry;
+}
+
+export function mcpServersToConfigObject(servers: NormalizedMcpServer[]): WorkspaceMcpConfig {
+  const mcpServers: Record<string, unknown> = {};
+  for (const s of servers) {
+    mcpServers[s.name] = mcpServerToConfigEntry(s);
+  }
+  return { mcpServers };
+}
+
+/**
+ * Write session MCP servers to `<cwd>/.agents/mcp_config.json`.
+ * Scoped to the session workspace, never touches global ~/.gemini/config/mcp_config.json.
+ */
+export function syncWorkspaceMcpServers(
+  cwd: string,
+  servers: NormalizedMcpServer[],
+): { added: string[]; configPath: string } {
+  const agentsDir = path.join(cwd, '.agents');
+  const configPath = path.join(agentsDir, 'mcp_config.json');
+  if (!fs.existsSync(agentsDir)) {
+    fs.mkdirSync(agentsDir, { recursive: true });
+  }
+  let existingServers: Record<string, unknown> = {};
+  if (fs.existsSync(configPath)) {
+    try {
+      const raw = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      if (raw && typeof raw === 'object' && typeof raw.mcpServers === 'object' && raw.mcpServers !== null) {
+        existingServers = raw.mcpServers as Record<string, unknown>;
+      }
+    } catch {
+      // ignore parse failure, overwrite safely
+    }
+  }
+  const newConfig = mcpServersToConfigObject(servers);
+  const merged: WorkspaceMcpConfig = {
+    mcpServers: {
+      ...existingServers,
+      ...newConfig.mcpServers,
+    },
+  };
+  fs.writeFileSync(configPath, JSON.stringify(merged, null, 2), 'utf8');
+  return { added: servers.map((s) => s.name), configPath };
+}
+
+/**
+ * Remove MCP servers from `<cwd>/.agents/mcp_config.json`.
+ * If mcpServers becomes empty, cleans up mcp_config.json.
+ */
+export function removeWorkspaceMcpServers(
+  cwd: string,
+  names: string[],
+): { removed: string[] } {
+  const configPath = path.join(cwd, '.agents', 'mcp_config.json');
+  if (!fs.existsSync(configPath)) {
+    return { removed: [] };
+  }
+  try {
+    const raw = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    if (raw && typeof raw === 'object' && typeof raw.mcpServers === 'object' && raw.mcpServers !== null) {
+      const servers = raw.mcpServers as Record<string, unknown>;
+      const removed: string[] = [];
+      for (const name of names) {
+        if (name in servers) {
+          delete servers[name];
+          removed.push(name);
+        }
+      }
+      if (Object.keys(servers).length === 0) {
+        fs.unlinkSync(configPath);
+      } else {
+        fs.writeFileSync(configPath, JSON.stringify({ mcpServers: servers }, null, 2), 'utf8');
+      }
+      return { removed };
+    }
+  } catch {
+    // best-effort cleanup
+  }
+  return { removed: [] };
 }

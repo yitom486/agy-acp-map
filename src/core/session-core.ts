@@ -44,6 +44,8 @@ import {
   validateMcpServers,
   syncMcpServers,
   removeMcpServers,
+  syncWorkspaceMcpServers,
+  removeWorkspaceMcpServers,
   defaultMcpRunFn,
   type McpRunFn,
 } from '../lib/mcp-servers.ts';
@@ -63,6 +65,8 @@ export interface SessionCoreOptions {
    * Keeps MCP sync unit-testable without touching the real global config.
    */
   mcpRunner?: McpRunFn;
+  /** Strategy: 'workspace' (default) or 'global' (legacy agy mcp add) */
+  mcpScope?: 'workspace' | 'global';
 }
 
 /** Rows without any completed turn older than this are hidden from
@@ -100,6 +104,7 @@ export class AgySessionCore {
   readonly historyStore: SessionHistoryStore;
   private catalogPromise: Promise<DiscoveryResult> | null = null;
   private readonly mcpRunner: McpRunFn;
+  readonly mcpScope: 'workspace' | 'global';
   /**
    * MCP server name → sessionIds that registered it (this process only).
    * Drives delete-time cleanup: a server is `agy mcp remove`d only when its
@@ -109,6 +114,7 @@ export class AgySessionCore {
 
   constructor(options?: SessionCoreOptions) {
     this.mcpRunner = options?.mcpRunner ?? defaultMcpRunFn;
+    this.mcpScope = options?.mcpScope ?? (options?.mcpRunner ? 'global' : (process.env.AGY_ACP_MCP_SCOPE as any) || 'workspace');
     if (options?.sessionStore instanceof SessionStore) {
       this.sessionStore = options.sessionStore;
     } else if (typeof options?.sessionStore === 'string') {
@@ -329,7 +335,11 @@ export class AgySessionCore {
     if (!servers.length) return [];
     const live = this.sessions.get(sessionId);
     const hadLiveProc = live ? live.proc.isWritable() : false;
-    await syncMcpServers(resolveAgyBin(), servers, this.mcpRunner);
+    if (this.mcpScope === 'workspace' && live?.cwd) {
+      syncWorkspaceMcpServers(live.cwd, servers);
+    } else {
+      await syncMcpServers(resolveAgyBin(), servers, this.mcpRunner);
+    }
     const names = servers.map((s) => ({ name: s.name }));
     if (live) live.mcpServers = names;
     this.trackMcpServers(sessionId, names.map((n) => n.name));
@@ -827,7 +837,11 @@ export class AgySessionCore {
     try {
       const freed = this.untrackMcpServers(sessionId);
       if (freed.length) {
-        await removeMcpServers(resolveAgyBin(), freed, this.mcpRunner);
+        if (this.mcpScope === 'workspace' && session?.cwd) {
+          removeWorkspaceMcpServers(session.cwd, freed);
+        } else {
+          await removeMcpServers(resolveAgyBin(), freed, this.mcpRunner);
+        }
       }
     } catch (err) {
       console.warn(`[ACP-MCP] cleanup after delete ${sessionId} failed: ${(err as Error)?.message || err}`);

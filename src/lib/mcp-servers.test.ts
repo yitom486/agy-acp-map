@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { describe, test, expect } from 'bun:test';
 import {
   validateMcpServers,
@@ -5,8 +7,11 @@ import {
   mcpServerToAgyAddArgs,
   syncMcpServers,
   removeMcpServers,
+  syncWorkspaceMcpServers,
+  removeWorkspaceMcpServers,
   type McpRunFn,
 } from './mcp-servers.ts';
+import os from 'node:os';
 
 const okRun: McpRunFn = async () => ({ status: 0, stdout: 'ok', stderr: '' });
 
@@ -139,5 +144,44 @@ describe('mcp-servers mapping (ACP -> agy mcp add)', () => {
       ['mcp', 'remove', 'lumina'],
       ['mcp', 'remove', 'gone'],
     ]);
+  });
+});
+
+
+describe('workspace-scoped MCP sync', () => {
+  const tmpDir = path.join(os.tmpdir(), 'agy-acp-ws-test-' + Date.now());
+
+  test('writes .agents/mcp_config.json cleanly and removes on cleanup', () => {
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const [s] = validateMcpServers([
+      {
+        name: 'lumina',
+        command: 'node',
+        args: ['server.js'],
+        env: [{ name: 'PORT', value: '3801' }],
+      },
+      {
+        name: 'web',
+        type: 'http',
+        url: 'https://example.com/mcp',
+        headers: [{ name: 'Authorization', value: 'Bearer T' }],
+      },
+    ]);
+    const { added, configPath } = syncWorkspaceMcpServers(tmpDir, [s]);
+    expect(added).toEqual(['lumina']);
+    expect(fs.existsSync(configPath)).toBe(true);
+
+    const parsed = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    expect(parsed.mcpServers.lumina).toEqual({
+      command: 'node',
+      args: ['server.js'],
+      env: { PORT: '3801' },
+    });
+
+    const { removed } = removeWorkspaceMcpServers(tmpDir, ['lumina']);
+    expect(removed).toEqual(['lumina']);
+    expect(fs.existsSync(configPath)).toBe(false);
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 });
