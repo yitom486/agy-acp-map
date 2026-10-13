@@ -417,6 +417,8 @@ function toUsageUpdate(
   if (typeof u?.input_tokens === 'number') meta.inputTokens = u.input_tokens;
   if (typeof u?.output_tokens === 'number') meta.outputTokens = u.output_tokens;
   if (typeof u?.total_tokens === 'number') meta.totalTokens = u.total_tokens;
+  const cached = (u as any)?.cached_tokens ?? (u as any)?.cached_input_tokens ?? (u as any)?.cache_read_input_tokens ?? (u as any)?.cachedTokens;
+  if (typeof cached === 'number' && Number.isFinite(cached)) meta.cachedTokens = cached;
   return notify(sessionId, {
     sessionUpdate: 'usage_update',
     used,
