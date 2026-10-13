@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { warnLog } from './debug-log.ts';
 
 /**
  * Small, display-oriented history journal.
@@ -177,7 +178,7 @@ export class SessionHistoryStore {
     try {
       if (fs.existsSync(file)) fs.unlinkSync(file);
     } catch (err) {
-      console.warn(`[ACP-HISTORY] Warning: failed to delete ${file}:`, err);
+      warnLog(`[ACP-HISTORY] Warning: failed to delete ${file}:`, err);
     }
   }
 }

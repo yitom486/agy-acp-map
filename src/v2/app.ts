@@ -1,6 +1,7 @@
 import * as v2 from '@agentclientprotocol/sdk/experimental/v2';
 import { AGENT_INFO, DEFAULT_AVAILABLE_COMMANDS } from '../core/types.ts';
 import { validatePromptBlocks } from '../lib/prompt-normalize.ts';
+import { errorLog } from '../lib/debug-log.ts';
 import { AgyAcpV2Service } from './adapter.ts';
 
 /**
@@ -79,7 +80,7 @@ export function createAcpV2App(service: AgyAcpV2Service | any = new AgyAcpV2Serv
             { isPreLocked: true },
           )
           .catch((err: any) => {
-            console.error('[ACP-V2] Background prompt turn error:', err);
+            errorLog('[ACP-V2] Background prompt turn error:', err);
           })
           .finally(() => {
             // Strictly reset busy state ONLY after promptSession has completely finished or failed

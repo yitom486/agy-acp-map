@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { RequestError } from '@agentclientprotocol/sdk';
+import { warnLog } from './debug-log.ts';
 
 /**
  * ACP `mcpServers` → `agy mcp add/remove` bridging.
@@ -282,7 +283,7 @@ export async function removeMcpServers(
     }
   }
   if (warnings.length) {
-    console.warn(`[ACP-MCP] cleanup warnings: ${warnings.join(' | ')}`);
+    warnLog(`[ACP-MCP] cleanup warnings: ${warnings.join(' | ')}`);
   }
   return { removed, warnings };
 }

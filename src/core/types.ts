@@ -2,11 +2,12 @@ import { SAFETY_TIERS } from '../lib/agy-args.ts';
 import type { AgyProcessManager } from '../lib/agy-process.ts';
 import type { MapperState } from '../lib/map-agy-to-acp.ts';
 import type { SoftDenyInfo } from '../lib/soft-deny.ts';
+import { errorLog } from '../lib/debug-log.ts';
 
 export const AGENT_INFO = {
   name: 'agy-acp',
   title: 'agy ACP (stream-json)',
-  version: '0.1.22',
+  version: '0.1.23',
 };
 
 export const BRIDGE_CAPABILITIES = {
@@ -139,7 +140,7 @@ export class AsyncSerialQueue {
 
   enqueue(fn: () => Promise<void> | void): Promise<void> {
     const next = this.tail.then(() => fn()).catch((err) => {
-      console.error('[AgyAcpService Queue Error]', err);
+      errorLog('[AgyAcpService Queue Error]', err);
     });
     this.tail = next;
     return next;

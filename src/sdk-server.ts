@@ -11,7 +11,7 @@ hideConsoleWindow();
 import { Readable, Writable } from 'node:stream';
 import * as acp from '@agentclientprotocol/sdk';
 import { createDualAcpApp, AgyAcpService } from './agent-sdk.ts';
-import { debugLog, installFileLogging } from './lib/debug-log.ts';
+import { debugLog, installFileLogging, traceLog } from './lib/debug-log.ts';
 
 const logPath = installFileLogging();
 debugLog(`START argv=${JSON.stringify(process.argv.slice(1))} cwd=${process.cwd()} bun=${(process as any).versions?.bun || 'no'} node=${process.version} log=${logPath}`);
@@ -27,7 +27,7 @@ const stream = acp.ndJsonStream(
   Readable.toWeb(process.stdin) as ReadableStream<Uint8Array>,
 );
 
-process.stderr.write('[agy-acp-sdk] Starting official @agentclientprotocol/sdk stdio server...\n');
+traceLog('[agy-acp-sdk] Starting official @agentclientprotocol/sdk stdio server...');
 
 // No orphans: terminating the bridge must also terminate supervised agy
 // children (warmup/turn processes), otherwise they pin the install directory

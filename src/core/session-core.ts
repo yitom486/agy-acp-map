@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import path from 'node:path';
 import { RequestError } from '@agentclientprotocol/sdk';
+import { traceLog, errorLog, warnLog } from '../lib/debug-log.ts';
 
 import {
   createMapperState,
@@ -191,7 +192,7 @@ export class AgySessionCore {
     if (!session || session.deleted || session.busy) return;
     if (session.proc.isWritable()) return;
     const target = this.buildSpawnTarget(session);
-    console.error(`[ACP-SDK] warmup: pre-spawning agy for sid: ${sessionId}`);
+    traceLog(`[ACP-SDK] warmup: pre-spawning agy for sid: ${sessionId}`);
     void session.proc
       .spawn({
         bin: target.bin,
@@ -213,17 +214,17 @@ export class AgySessionCore {
           }
         },
         onError: (err: Error) => {
-          console.error(`[ACP-SDK] warmup error (sid: ${sessionId}):`, err.message);
+          errorLog(`[ACP-SDK] warmup error (sid: ${sessionId}):`, err.message);
         },
         onStderr: (line: string) => {
           session.stderrBuf += line + '\n';
         },
         onExit: (code: number | null) => {
-          console.error(`[ACP-SDK] warmup exit (sid: ${sessionId}): code: ${code}`);
+          traceLog(`[ACP-SDK] warmup exit (sid: ${sessionId}): code: ${code}`);
         },
       })
       .catch((err: any) => {
-        console.error(`[ACP-SDK] warmup spawn failed (sid: ${sessionId}):`, err?.message);
+        errorLog(`[ACP-SDK] warmup spawn failed (sid: ${sessionId}):`, err?.message);
       });
   }
 
@@ -243,7 +244,7 @@ export class AgySessionCore {
     try {
       this.sessionStore.upsert(sessionToRecord(session));
     } catch (err) {
-      console.warn(`[ACP-STORE] Warning: failed to persist session ${session?.sessionId}:`, err);
+      warnLog(`[ACP-STORE] Warning: failed to persist session ${session?.sessionId}:`, err);
       if (opts?.throwOnError) throw err;
     }
   }
@@ -269,7 +270,7 @@ export class AgySessionCore {
       );
     } catch (err) {
       // History is a display cache. A write failure must never break the ACP turn.
-      console.warn(`[ACP-HISTORY] Warning: failed to persist turn ${sessionId}:`, err);
+      warnLog(`[ACP-HISTORY] Warning: failed to persist turn ${sessionId}:`, err);
     }
   }
 
@@ -346,7 +347,7 @@ export class AgySessionCore {
     if (hadLiveProc) {
       // A live agy process read its MCP config at spawn; newly added
       // servers take effect on the next fresh spawn (reconnect).
-      console.warn(
+      warnLog(
         `[ACP-MCP] session ${sessionId}: MCP servers [${names.map((n) => n.name).join(', ')}] ` +
           `registered while the session process is live; they apply to fresh spawns (reconnect to use them).`,
       );
@@ -844,7 +845,7 @@ export class AgySessionCore {
         }
       }
     } catch (err) {
-      console.warn(`[ACP-MCP] cleanup after delete ${sessionId} failed: ${(err as Error)?.message || err}`);
+      warnLog(`[ACP-MCP] cleanup after delete ${sessionId} failed: ${(err as Error)?.message || err}`);
     }
     return {};
   }
@@ -972,7 +973,7 @@ export class AgySessionCore {
     session.mapper = resetTurnState(session.mapper);
     session.updatedAt = new Date().toISOString();
 
-    console.error(
+    traceLog(
       `[ACP-SDK] promptTurn: sid: ${sessionId}, v: ${protocolVersion}, isWritable: ${session.proc.isWritable()}, model: ${session.model}, text: "${text.slice(0, 60)}"`,
     );
 
@@ -1008,7 +1009,7 @@ export class AgySessionCore {
             content: [{ type: 'text', text }],
           });
         } catch (err) {
-          console.error(`[ACP-SDK] notify user_message failed (sid: ${sessionId}):`, (err as Error)?.message);
+          errorLog(`[ACP-SDK] notify user_message failed (sid: ${sessionId}):`, (err as Error)?.message);
         }
       });
     }
@@ -1021,7 +1022,7 @@ export class AgySessionCore {
         isSettled = true;
         session.busy = false;
 
-        console.error(`[ACP-SDK] finish: ending turn for sid: ${sessionId} with stopReason: ${stopReason}`);
+        traceLog(`[ACP-SDK] finish: ending turn for sid: ${sessionId} with stopReason: ${stopReason}`);
 
         queue.enqueue(async () => {
           if (session.deleted || !this.sessions.has(sessionId)) {
@@ -1104,7 +1105,7 @@ export class AgySessionCore {
               try {
                 await notifyClient(u);
               } catch (err) {
-                console.error(`[ACP-SDK] notify idle failed (sid: ${sessionId}):`, (err as Error)?.message);
+                errorLog(`[ACP-SDK] notify idle failed (sid: ${sessionId}):`, (err as Error)?.message);
               }
               finish(u.stopReason || 'end_turn');
               return;
@@ -1114,14 +1115,14 @@ export class AgySessionCore {
             } catch (err) {
               // Per-notification isolation: one slow/failing notify must not
               // drop the rest of the batch and look like a stuck turn.
-              console.error(`[ACP-SDK] notify ${u.sessionUpdate} failed (sid: ${sessionId}):`, (err as Error)?.message);
+              errorLog(`[ACP-SDK] notify ${u.sessionUpdate} failed (sid: ${sessionId}):`, (err as Error)?.message);
             }
           }
         });
       };
 
       const onError = (err: Error) => {
-        console.error(`[ACP-SDK] onError (sid: ${sessionId}):`, err.message);
+        errorLog(`[ACP-SDK] onError (sid: ${sessionId}):`, err.message);
         historyTurnEligible = false;
         queue.enqueue(async () => {
           if (session.deleted || !this.sessions.has(sessionId)) return;
@@ -1144,7 +1145,7 @@ export class AgySessionCore {
       };
 
       const onExit = (code: number | null) => {
-        console.error(`[ACP-SDK] onExit (sid: ${sessionId}): code: ${code}`);
+        traceLog(`[ACP-SDK] onExit (sid: ${sessionId}): code: ${code}`);
         if (session.deleted || !this.sessions.has(sessionId)) return;
         if (session.busy && !isSettled) {
           finish(session.cancelled ? 'cancelled' : 'end_turn');
@@ -1157,7 +1158,7 @@ export class AgySessionCore {
       // Windows UAC popups come from the elevated command itself, never from this
       // bridge (spawn uses windowsHide + piped stdio, no shell/runas) — no --sandbox
       // by default (full permissions); set safety=autonomous to contain terminal side-effects.
-      console.error(
+      traceLog(
         `[ACP-SDK] safety: sid: ${sessionId} safety=${safety.safety} skip=${safety.skipPermissions ? 1 : 0} sandbox=${safety.sandbox ? 1 : 0} warmed=${session.proc.isWritable() ? 1 : 0}`,
       );
 
@@ -1168,7 +1169,7 @@ export class AgySessionCore {
       (async () => {
         try {
           if (!session.proc.isWritable()) {
-            console.error(`[ACP-SDK] session process not writable -> spawning new process for sid: ${sessionId}`);
+            traceLog(`[ACP-SDK] session process not writable -> spawning new process for sid: ${sessionId}`);
             await session.proc.spawn({
               bin: execBin,
               args: execArgs,
@@ -1179,7 +1180,7 @@ export class AgySessionCore {
               onExit,
             });
           } else {
-            console.error(`[ACP-SDK] session process writable -> updating callbacks for consecutive turn, sid: ${sessionId}`);
+            traceLog(`[ACP-SDK] session process writable -> updating callbacks for consecutive turn, sid: ${sessionId}`);
             session.proc.setCallbacks({
               onEvent,
               onError,
@@ -1189,7 +1190,7 @@ export class AgySessionCore {
           }
 
           const line = JSON.stringify(buildAgyUserMessage(text));
-          console.error(`[ACP-SDK] writing user message to stdin: len: ${line.length}`);
+          traceLog(`[ACP-SDK] writing user message to stdin: len: ${line.length}`);
           session.proc.writeLine(line);
         } catch (err: any) {
           onError(err);

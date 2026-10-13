@@ -47,13 +47,59 @@ export function debugLog(msg: string): void {
   writeLine(`${new Date().toISOString()} pid=${process.pid} ${msg}`);
 }
 
+export function isAgyDebug(): boolean {
+  return process.env.AGY_ACP_DEBUG === '1' || process.env.DEBUG === '1' || process.env.DEBUG === 'true';
+}
+
+/**
+ * Routine operational/warmup trace logging:
+ * - Always recorded in headless disk log (%TEMP%/agy-acp.log).
+ * - Silent on stderr by default (following codex-acp stdio silence invariants).
+ * - Only mirrored to stderr when AGY_ACP_DEBUG=1 or DEBUG=1.
+ */
+export function traceLog(msg: string, ...rest: unknown[]): void {
+  const line = rest.length
+    ? `${msg} ${rest.map((r) => (typeof r === 'string' ? r : JSON.stringify(r))).join(' ')}`
+    : msg;
+  debugLog(line);
+  if (isAgyDebug()) {
+    process.stderr.write(`[agy-acp] ${line}\n`);
+  }
+}
+
+/**
+ * True failure/error logging:
+ * - Always recorded in disk log.
+ * - Always surfaced to stderr so operators and supervising harnesses know what broke.
+ */
+export function errorLog(msg: string, ...rest: unknown[]): void {
+  const line = rest.length
+    ? `${msg} ${rest.map((r) => (r instanceof Error ? r.stack || r.message : typeof r === 'string' ? r : JSON.stringify(r))).join(' ')}`
+    : msg;
+  debugLog(`ERROR: ${line}`);
+  process.stderr.write(`[agy-acp:error] ${line}\n`);
+}
+
+export function warnLog(msg: string, ...rest: unknown[]): void {
+  const line = rest.length
+    ? `${msg} ${rest.map((r) => (typeof r === 'string' ? r : JSON.stringify(r))).join(' ')}`
+    : msg;
+  debugLog(`WARN: ${line}`);
+  if (isAgyDebug()) {
+    process.stderr.write(`[agy-acp:warn] ${line}\n`);
+  }
+}
+
 export function installFileLogging(): string | null {
   try {
     process.on('uncaughtException', (err) => {
       debugLog(`FATAL uncaughtException: ${err?.stack || err}`);
+      errorLog(`FATAL uncaughtException: ${err?.stack || err}`);
     });
     process.on('unhandledRejection', (reason) => {
-      debugLog(`FATAL unhandledRejection: ${reason instanceof Error ? reason.stack : reason}`);
+      const msg = reason instanceof Error ? reason.stack || reason.message : String(reason);
+      debugLog(`FATAL unhandledRejection: ${msg}`);
+      errorLog(`FATAL unhandledRejection: ${msg}`);
     });
     process.stdin.on('end', () => debugLog('stdin END (parent closed pipe)'));
     process.stdin.on('close', () => debugLog('stdin CLOSE'));
