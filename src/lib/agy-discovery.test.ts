@@ -1,5 +1,11 @@
 import { describe, expect, test } from 'bun:test';
-import { parseAgyModelsStdout, parseAgyAgentsStdout } from './agy-discovery.ts';
+import {
+  parseAgyModelsStdout,
+  parseAgyAgentsStdout,
+  discoverAgyCatalog,
+  clearDiscoveryCache,
+  DEFAULT_AGY_MODELS,
+} from './agy-discovery.ts';
 
 describe('parseAgyModelsStdout', () => {
   test('parses tab-separated catalog; skips Fetching line', () => {
@@ -36,3 +42,33 @@ research
     expect(parseAgyAgentsStdout('Usage: agy agent [flags]\n')).toEqual([]);
   });
 });
+
+describe('discoverAgyCatalog', () => {
+  test('DEFAULT_AGY_MODELS contains only active verified models', () => {
+    expect(DEFAULT_AGY_MODELS).toContain('gemini-3.8-flash-high');
+    expect(DEFAULT_AGY_MODELS).toContain('claude-sonnet-4-6');
+    expect(DEFAULT_AGY_MODELS).not.toContain('gemini-3.7-flash-high');
+    expect(DEFAULT_AGY_MODELS).not.toContain('gemini-3.6-flash-high');
+    expect(DEFAULT_AGY_MODELS).not.toContain('gemini-3.1-pro-high');
+  });
+
+  test('returns static pruned DEFAULT_AGY_MODELS when dynamic is false', async () => {
+    clearDiscoveryCache();
+    const result = await discoverAgyCatalog({ dynamic: false, force: true });
+    expect(result.availableModels).toEqual(DEFAULT_AGY_MODELS);
+    expect(result.availableAgents).toEqual([]);
+  });
+
+  test('returns static models when AGY_DYNAMIC_DISCOVERY=false env is set', async () => {
+    clearDiscoveryCache();
+    const orig = process.env.AGY_DYNAMIC_DISCOVERY;
+    try {
+      process.env.AGY_DYNAMIC_DISCOVERY = 'false';
+      const result = await discoverAgyCatalog({ force: true });
+      expect(result.availableModels).toEqual(DEFAULT_AGY_MODELS);
+    } finally {
+      process.env.AGY_DYNAMIC_DISCOVERY = orig;
+    }
+  });
+});
+

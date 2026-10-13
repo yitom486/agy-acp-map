@@ -178,20 +178,12 @@ function runAgySubcommand(
 }
 
 /**
- * Official supported Antigravity models (verified 14 models).
+ * Official default Antigravity models fallback (active verified models).
  */
 export const DEFAULT_AGY_MODELS: string[] = [
   'gemini-3.8-flash-high',
   'gemini-3.8-flash-medium',
   'gemini-3.8-flash-low',
-  'gemini-3.7-flash-high',
-  'gemini-3.7-flash-medium',
-  'gemini-3.7-flash-low',
-  'gemini-3.6-flash-high',
-  'gemini-3.6-flash-medium',
-  'gemini-3.6-flash-low',
-  'gemini-3.1-pro-high',
-  'gemini-3.1-pro-low',
   'claude-sonnet-4-6',
   'claude-opus-4-6-thinking',
   'gpt-oss-120b-medium',
@@ -217,7 +209,9 @@ export async function discoverAgyCatalog(opts?: {
   if (inflight && !opts?.force) return inflight;
 
   const isScriptMock = /\.(cjs|js|mjs|ts)$/i.test(bin);
-  const dynamic = opts?.dynamic ?? (process.env.AGY_DYNAMIC_DISCOVERY === 'true' || isScriptMock);
+  const envVal = (process.env.AGY_DYNAMIC_DISCOVERY || '').trim().toLowerCase();
+  const envDisabled = envVal === 'false' || envVal === '0' || envVal === 'off';
+  const dynamic = opts?.dynamic ?? (!envDisabled || isScriptMock);
   if (!dynamic) {
     const staticResult: DiscoveryResult = {
       availableModels: [...DEFAULT_AGY_MODELS],
