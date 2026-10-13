@@ -1,4 +1,4 @@
-import { AGENT_INFO, BRIDGE_CAPABILITIES } from '../core/types.ts';
+import { AGENT_INFO, BRIDGE_CAPABILITIES, DEFAULT_AVAILABLE_COMMANDS } from '../core/types.ts';
 import { AgySessionCore } from '../core/session-core.ts';
 import { formatUpdateForProtocol } from '../lib/map-agy-to-acp.ts';
 import { V2_AGENT_CAPABILITIES } from './types.ts';
@@ -33,10 +33,12 @@ export class AgyAcpV2Service {
 
   async newSession(params: any): Promise<any> {
     const { session, discovery, meta } = await this.core.createSession(params, 2);
+    const mergedMeta = { ...(meta || {}), availableCommands: DEFAULT_AVAILABLE_COMMANDS };
     return {
       sessionId: session.sessionId,
       configOptions: buildV2ConfigOptions(discovery, session),
-      ...(meta ? { _meta: meta } : {}),
+      availableCommands: DEFAULT_AVAILABLE_COMMANDS,
+      _meta: mergedMeta,
     };
   }
 
@@ -51,9 +53,11 @@ export class AgyAcpV2Service {
       }
       await this.core.replayHistory(session.sessionId, 2, notifyClient);
     }
+    const mergedMeta = { ...(meta || {}), availableCommands: DEFAULT_AVAILABLE_COMMANDS };
     return {
       configOptions: buildV2ConfigOptions(discovery, session),
-      ...(meta ? { _meta: meta } : {}),
+      availableCommands: DEFAULT_AVAILABLE_COMMANDS,
+      _meta: mergedMeta,
     };
   }
 

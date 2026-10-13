@@ -1,5 +1,5 @@
 import * as v1 from '@agentclientprotocol/sdk';
-import { AGENT_INFO } from '../core/types.ts';
+import { AGENT_INFO, DEFAULT_AVAILABLE_COMMANDS } from '../core/types.ts';
 import { AgyAcpV1Service } from './adapter.ts';
 
 /**

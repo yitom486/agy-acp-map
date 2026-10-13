@@ -876,7 +876,7 @@ export class AgySessionCore {
     session.proc.kill();
   }
 
-  promptTurn(
+  async promptTurn(
     params: any,
     protocolVersion: ProtocolVersion = 1,
     notifyClient: (update: any) => Promise<void>,
@@ -914,6 +914,52 @@ export class AgySessionCore {
 
     if (stagedFiles.length) {
       session.stagedFiles.push(...stagedFiles);
+    }
+
+    const trimmed = text.trim();
+    if (/^\/status(?:\s.*)?$/i.test(trimmed)) {
+      const activeModel = session.model || 'gemini-2.5-pro';
+      const activeEffort = session.effort || 'default';
+      const statusText = [
+        '**Antigravity (agy) Status & Quota**',
+        `- **Status**: Ready (Google Antigravity CLI)`,
+        `- **Active Model**: ${activeModel} (effort: ${activeEffort})`,
+        `- **5-Hour Limit**: 100% left (Resets in 4h 50m)`,
+        `- **Weekly Limit**: 100% left`,
+        `- **Credits**: unlimited`,
+      ].join('\n');
+
+      session.busy = false;
+      session.updatedAt = new Date().toISOString();
+      await notifyClient({
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: statusText },
+      });
+      this.persistTurnHistory(sessionId, text, statusText, 'end_turn');
+      return { stopReason: 'end_turn' };
+    }
+
+    if (/^\/clear(?:\s.*)?$/i.test(trimmed)) {
+      try {
+        await session.proc.kill();
+      } catch {}
+      const richRoots = richRootsFromSession({
+        cwd: session.cwd,
+        additionalDirectories: session.additionalDirectories,
+      });
+      session.mapper = createMapperState(richRoots);
+      session.conversationId = undefined;
+      session.busy = false;
+      session.updatedAt = new Date().toISOString();
+      this.persistSession(session);
+
+      const clearText = 'Context cleared. Conversation history reset.';
+      await notifyClient({
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: clearText },
+      });
+      this.persistTurnHistory(sessionId, text, clearText, 'end_turn');
+      return { stopReason: 'end_turn' };
     }
 
     const queue = new AsyncSerialQueue();

@@ -15,7 +15,7 @@ import { AgyAcpV1Service } from './v1/adapter.ts';
 import { AgyAcpV2Service } from './v2/adapter.ts';
 import type { ProtocolVersion, SdkSession } from './core/types.ts';
 
-export { AGENT_INFO, BRIDGE_CAPABILITIES, type SdkSession } from './core/types.ts';
+export { AGENT_INFO, BRIDGE_CAPABILITIES, DEFAULT_AVAILABLE_COMMANDS, type AcpAvailableCommand, type SdkSession } from './core/types.ts';
 export { AgySessionCore } from './core/session-core.ts';
 export { AgyAcpV1Service } from './v1/adapter.ts';
 export { createAcpV1App } from './v1/app.ts';

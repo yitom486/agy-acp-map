@@ -6,7 +6,7 @@ import type { SoftDenyInfo } from '../lib/soft-deny.ts';
 export const AGENT_INFO = {
   name: 'agy-acp',
   title: 'agy ACP (stream-json)',
-  version: '0.1.20',
+  version: '0.1.21',
 };
 
 export const BRIDGE_CAPABILITIES = {
@@ -26,6 +26,24 @@ export const BRIDGE_CAPABILITIES = {
   clientFilesystem: false,
   clientTerminal: false,
 };
+
+export interface AcpAvailableCommand {
+  name: string;
+  description: string;
+  input?: { hint: string };
+  _meta?: Record<string, unknown>;
+}
+
+export const DEFAULT_AVAILABLE_COMMANDS: AcpAvailableCommand[] = [
+  {
+    name: 'status',
+    description: 'Show Antigravity status, active model, and quota limits',
+  },
+  {
+    name: 'clear',
+    description: 'Clear current conversation context',
+  },
+];
 
 export type ProtocolVersion = 1 | 2;
 

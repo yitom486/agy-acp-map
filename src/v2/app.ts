@@ -1,5 +1,5 @@
 import * as v2 from '@agentclientprotocol/sdk/experimental/v2';
-import { AGENT_INFO } from '../core/types.ts';
+import { AGENT_INFO, DEFAULT_AVAILABLE_COMMANDS } from '../core/types.ts';
 import { validatePromptBlocks } from '../lib/prompt-normalize.ts';
 import { AgyAcpV2Service } from './adapter.ts';
 
