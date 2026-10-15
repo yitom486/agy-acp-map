@@ -7,7 +7,7 @@ import { errorLog } from '../lib/debug-log.ts';
 export const AGENT_INFO = {
   name: 'agy-acp',
   title: 'agy ACP (stream-json)',
-  version: '0.1.23',
+  version: '0.1.24',
 };
 
 export const BRIDGE_CAPABILITIES = {
@@ -104,6 +104,8 @@ export interface SdkSession {
   sessionId: string;
   cwd: string;
   additionalDirectories?: string[];
+  /** Bridge-specific session resource source, never persisted as global config. */
+  resourceDirectory?: string;
   createdAt: string;
   updatedAt: string;
   title?: string;

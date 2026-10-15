@@ -34,8 +34,8 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile || bun install
 
-      - name: Run Core Engine Unit Tests (101 tests)
-        run: bun test src/lib
+      - name: Run bridge regression tests
+        run: bun test --timeout 30000
 
       - name: Run CLI Arguments Tests
         run: bun run test:args

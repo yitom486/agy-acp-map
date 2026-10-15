@@ -384,3 +384,11 @@ against a known-good agent such as `opencode acp`).
 - **Windows:** install [Bun](https://bun.sh), ensure `agy` is on `PATH`, then same commands (`bun src/server.ts`, `bun test`, `bun run smoke:all`).
 - Unit & Integration tests: `bun test --timeout 30000`.
 
+
+## Session application resources (0.1.24)
+
+Default MCP scope is now `session`: each ACP session owns a temporary additional workspace containing `.agents/mcp_config.json`. User cwd and global configuration are unchanged. Close, delete and orderly bridge shutdown stop the child before removing this directory; resume recreates it. Abrupt termination may leave temporary files.
+
+Pass `_meta.appResources.directory` (absolute application resource directory containing `AGENTS.md` and `skills/<name>/SKILL.md`) on new/resume/load, or set bridge-only `AGY_ACP_RESOURCES_DIR`. The bridge copies rules and skill bundles into the private workspace and enables native skill expansion unless explicitly overridden. Symlinks and resource bundles exceeding 16 MiB are rejected. No plugin installation or credential copying occurs. `_meta.appResources` in the response reports preparation, not model compliance. Additional workspace discovery was checked using the real agy CLI local `/skills` command, without a model call.
+
+`AGY_ACP_MCP_SCOPE=workspace` retains the legacy workspace registration mode; `global` is a legacy opt-in. Only the default session mode guarantees no writes to user MCP configuration. Multiple sessions have distinct directories, including when they share a cwd or server name.

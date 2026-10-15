@@ -1,3 +1,4 @@
+import { SessionResources } from '../lib/session-resources.ts';
 import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import path from 'node:path';
@@ -67,7 +68,7 @@ export interface SessionCoreOptions {
    */
   mcpRunner?: McpRunFn;
   /** Strategy: 'workspace' (default) or 'global' (legacy agy mcp add) */
-  mcpScope?: 'workspace' | 'global';
+  mcpScope?: 'session' | 'workspace' | 'global';
 }
 
 /** Rows without any completed turn older than this are hidden from
@@ -105,7 +106,8 @@ export class AgySessionCore {
   readonly historyStore: SessionHistoryStore;
   private catalogPromise: Promise<DiscoveryResult> | null = null;
   private readonly mcpRunner: McpRunFn;
-  readonly mcpScope: 'workspace' | 'global';
+  readonly mcpScope: 'session' | 'workspace' | 'global';
+  private readonly resourceRoots = new Map<string, SessionResources>();
   /**
    * MCP server name → sessionIds that registered it (this process only).
    * Drives delete-time cleanup: a server is `agy mcp remove`d only when its
@@ -115,7 +117,8 @@ export class AgySessionCore {
 
   constructor(options?: SessionCoreOptions) {
     this.mcpRunner = options?.mcpRunner ?? defaultMcpRunFn;
-    this.mcpScope = options?.mcpScope ?? (options?.mcpRunner ? 'global' : (process.env.AGY_ACP_MCP_SCOPE as any) || 'workspace');
+    this.mcpScope = options?.mcpScope ?? (options?.mcpRunner ? 'global' : (process.env.AGY_ACP_MCP_SCOPE as any) || 'session');
+    if (!['session', 'workspace', 'global'].includes(this.mcpScope)) throw new Error('Invalid AGY_ACP_MCP_SCOPE');
     if (options?.sessionStore instanceof SessionStore) {
       this.sessionStore = options.sessionStore;
     } else if (typeof options?.sessionStore === 'string') {
@@ -152,11 +155,12 @@ export class AgySessionCore {
   buildSpawnTarget(session: SdkSession): { bin: string; args: string[] } {
     const skip = resolveSkipPermissions(session);
     const disableSlash = resolveDisableSlashCommands(session);
+    const resources = this.resourceRoots.get(session.sessionId);
     const printTimeout = resolvePrintTimeout(session);
     const safety = resolveSafety(session);
     const args = buildAgyArgs({
       cwd: session.cwd,
-      additionalDirectories: session.additionalDirectories,
+      additionalDirectories: [...(session.additionalDirectories ?? []), ...(resources ? [resources.directory] : [])],
       conversationId: session.conversationId || session.mapper?.conversationId,
       model: session.model,
       effort: session.effort,
@@ -235,6 +239,8 @@ export class AgySessionCore {
       kills.push(session.proc.kill().catch(() => undefined));
     }
     await Promise.all(kills);
+    for (const session of this.sessions.values()) await this.releaseSessionResources(session);
+    this.sessions.clear();
   }
 
   persistSession(session: SdkSession, opts?: { throwOnError?: boolean }): void {
@@ -299,6 +305,7 @@ export class AgySessionCore {
 
   sessionMeta(session: SdkSession): Record<string, unknown> | undefined {
     const meta: Record<string, unknown> = {};
+    if (this.resourceRoots.has(session.sessionId)) meta.appResources = { scope: 'session', prepared: true };
     if (session.conversationId) meta.conversationId = session.conversationId;
     if (session.model) meta.model = session.model;
     if (session.effort) meta.effort = session.effort;
@@ -333,8 +340,25 @@ export class AgySessionCore {
     input: unknown,
   ): Promise<Array<{ name: string }>> {
     const servers = validateMcpServers(input ?? []);
-    if (!servers.length) return [];
     const live = this.sessions.get(sessionId);
+    if (live && this.mcpScope === 'session') {
+      let resources = this.resourceRoots.get(sessionId);
+      if (!resources) {
+        resources = new SessionResources(live.resourceDirectory ?? process.env.AGY_ACP_RESOURCES_DIR);
+        this.resourceRoots.set(sessionId, resources);
+        if ((live.resourceDirectory || process.env.AGY_ACP_RESOURCES_DIR) && live.disableSlashCommands === undefined) live.disableSlashCommands = false;
+      }
+      const next = servers.map(s => ({name:s.name}));
+      const previous = (live.mcpServers ?? []).map(s => s.name);
+      if (JSON.stringify(next) !== JSON.stringify(live.mcpServers ?? []) || servers.length) {
+        if (live.proc.isWritable()) await live.proc.kill();
+      }
+      removeWorkspaceMcpServers(resources.directory, previous);
+      if (servers.length) syncWorkspaceMcpServers(resources.directory, servers);
+      live.mcpServers = next;
+      return next;
+    }
+    if (!servers.length) return [];
     const hadLiveProc = live ? live.proc.isWritable() : false;
     if (this.mcpScope === 'workspace' && live?.cwd) {
       syncWorkspaceMcpServers(live.cwd, servers);
@@ -428,6 +452,7 @@ export class AgySessionCore {
       sessionId,
       cwd,
       additionalDirectories: params?.additionalDirectories,
+      resourceDirectory: params?._meta?.appResources?.directory,
       createdAt: now,
       updatedAt: now,
       title: undefined,
@@ -457,8 +482,15 @@ export class AgySessionCore {
     this.sessions.set(sessionId, session);
     // Register MCP servers BEFORE warmup spawns agy, so the fresh process
     // lists their tools from the first turn.
-    await this.applySessionMcpServers(sessionId, params?.mcpServers);
-    this.persistSession(session);
+    try {
+      await this.applySessionMcpServers(sessionId, params?.mcpServers);
+      this.persistSession(session);
+    } catch (error) {
+      await session.proc.kill();
+      await this.releaseSessionResources(session);
+      this.sessions.delete(sessionId);
+      throw error;
+    }
     // Connect-time warm-up: pull agy up now so first prompt doesn't pay cold spawn.
     this.warmupSession(sessionId);
 
@@ -603,6 +635,7 @@ export class AgySessionCore {
 
     const discovery = await this.getDiscovery();
     this.applyCatalogDefaults(session, discovery);
+    session.resourceDirectory = params?._meta?.appResources?.directory ?? session.resourceDirectory;
     // Reconcile MCP servers (idempotent add). Unlike the old hard error,
     // resume with servers now works — this is what keeps memory continuous
     // across reconnects instead of forcing session/new.
@@ -833,21 +866,20 @@ export class AgySessionCore {
 
     this.sessionStore.delete(sessionId);
     this.historyStore.delete(sessionId);
-    // Remove MCP servers this session registered, but only when no other
-    // live session references them. Best-effort: warnings, never throws.
-    try {
-      const freed = this.untrackMcpServers(sessionId);
-      if (freed.length) {
-        if (this.mcpScope === 'workspace' && session?.cwd) {
-          removeWorkspaceMcpServers(session.cwd, freed);
-        } else {
-          await removeMcpServers(resolveAgyBin(), freed, this.mcpRunner);
-        }
-      }
-    } catch (err) {
-      warnLog(`[ACP-MCP] cleanup after delete ${sessionId} failed: ${(err as Error)?.message || err}`);
-    }
+    if (session) await this.releaseSessionResources(session);
     return {};
+  }
+
+  private async releaseSessionResources(session: SdkSession): Promise<void> {
+    const resources = this.resourceRoots.get(session.sessionId);
+    if (resources) {
+      resources.dispose();
+      this.resourceRoots.delete(session.sessionId);
+      return;
+    }
+    const freed = this.untrackMcpServers(session.sessionId);
+    if (this.mcpScope === 'workspace') removeWorkspaceMcpServers(session.cwd, freed);
+    else if (freed.length) await removeMcpServers(resolveAgyBin(), freed, this.mcpRunner);
   }
 
   async closeSession(params: any): Promise<{}> {
@@ -858,6 +890,7 @@ export class AgySessionCore {
     }
 
     await session.proc.kill();
+    await this.releaseSessionResources(session);
     cleanupSessionStaging(session.cwd, { sessionId, keep: false });
     session.stagedFiles = [];
     this.sessions.delete(sessionId);

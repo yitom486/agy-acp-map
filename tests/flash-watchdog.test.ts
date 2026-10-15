@@ -224,6 +224,7 @@ describe('console flash (Zed-like GUI parent)', () => {
     const stderrFile = path.join(dir, 'bridge-stderr.log');
     const env: NodeJS.ProcessEnv = {
       ...process.env,
+      AGY_ACP_DEBUG: '1',
       AGY_BIN: fakeAgy,
       AGY_HEADLESS_LAUNCHER: SHIM,
       AGY_ACP_SESSION_STORE: path.join(storeDir, 'sessions.json'),

@@ -1,6 +1,6 @@
 {
   "name": "@yitom/agy-acp-map",
-  "version": "0.1.23",
+  "version": "0.1.24",
   "publishConfig": {
     "access": "public"
   },
