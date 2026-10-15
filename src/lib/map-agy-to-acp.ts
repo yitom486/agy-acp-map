@@ -9,6 +9,7 @@ import {
   type FileToAcpImageOpts,
 } from './rich-content.ts';
 import path from 'node:path';
+import { resolveLargeToolOutput } from './large-tool-output.ts';
 import { STAGING_DIRNAME } from './prompt-normalize.ts';
 import { modelContextWindow } from './agy-args.ts';
 
@@ -571,7 +572,7 @@ export function mapAgyEvent(
         if (locations) toolCall.locations = locations;
 
         if (isTerminal) {
-          const textOut = stringifyOut(output, error);
+          const textOut = error ? stringifyOut(output, error) : resolveLargeToolOutput(stringifyOut(output, error), state.conversationId);
           const rich = buildRichToolContent(textOut, params, output, richOpts);
           if (rich.content.length) toolCall.content = rich.content;
           if (output !== undefined) toolCall.rawOutput = output;
@@ -595,7 +596,7 @@ export function mapAgyEvent(
           status: failed ? 'failed' : 'completed',
         };
         if (locations) update.locations = locations;
-        const textOut = stringifyOut(output, error);
+        const textOut = error ? stringifyOut(output, error) : resolveLargeToolOutput(stringifyOut(output, error), state.conversationId);
         const rich = buildRichToolContent(textOut, params, output, richOpts);
         if (rich.content.length) update.content = rich.content;
         if (output !== undefined) update.rawOutput = output;

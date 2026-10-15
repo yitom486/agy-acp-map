@@ -113,3 +113,6 @@ bun test src/lib/soft-deny.test.ts
 bun test src/lib/prompt-normalize.test.ts
 bun test src/lib/session-store.test.ts
 ```
+
+
+`large-tool-output.ts`（+ `.test.ts`）恢复 agy CLI 外置的大型工具输出：仅接受当前原生 conversation 的 `.system_generated/steps/<index>/output.txt`，按 realpath 校验并限制 1MiB，跨会话/越界/缺失/超限保留原始引用。`map-agy-to-acp.ts` 在终态回传 ACP 正文前调用，MCP 不再只剩文件指针。

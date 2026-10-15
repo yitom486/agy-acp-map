@@ -1,3 +1,10 @@
+## v0.1.25 — Restore large MCP tool output (2026-10-16)
+
+- Resolve agy CLI's large-output file notices into ACP text content, so clients receive actual MCP results instead of file pointers.
+- Restrict reads to the current native conversation's generated step output, with realpath validation and a bounded 1MiB read; preserve the original notice for missing, oversized or disallowed files.
+- Keep tool status, raw output and ordinary tool content unchanged. Add regression coverage for conversation isolation, path escapes, missing files and size limits.
+
+---
 ## v0.1.18 — exe gone: bunx-only distribution (2026-09-23)
 
 - The compiled single-file `agy-acp-win-x64.exe` is deleted, not moved:
