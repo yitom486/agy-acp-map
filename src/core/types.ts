@@ -7,7 +7,7 @@ import { errorLog } from '../lib/debug-log.ts';
 export const AGENT_INFO = {
   name: 'agy-acp',
   title: 'agy ACP (stream-json)',
-  version: '0.1.25',
+  version: '0.1.26',
 };
 
 export const BRIDGE_CAPABILITIES = {

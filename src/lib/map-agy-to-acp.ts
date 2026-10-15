@@ -15,6 +15,7 @@ import { modelContextWindow } from './agy-args.ts';
 
 export interface MapperState {
   conversationId?: string;
+  pendingToolOutputs?: Map<number, {toolCallId:string;title:string}>;
   tools?: string[];
   permissionMode?: string;
   agentMessageIds: Map<number, string>;
@@ -52,6 +53,7 @@ export function createMapperState(richRoots?: FileToAcpImageOpts): MapperState {
     thoughtMessageIds: new Map(),
     toolSeen: new Set(),
     toolIds: new Map(),
+    pendingToolOutputs: new Map(),
     turnSeq: 0,
     lastStopReason: undefined,
     turnDone: false,
@@ -71,6 +73,7 @@ export function resetTurnState(state: MapperState): MapperState {
     thoughtMessageIds: new Map(),
     toolSeen: new Set(),
     toolIds: new Map(),
+    pendingToolOutputs: new Map(),
     turnSeq: (state.turnSeq ?? 0) + 1,
     lastStopReason: undefined,
     turnDone: false,
@@ -572,8 +575,12 @@ export function mapAgyEvent(
         if (locations) toolCall.locations = locations;
 
         if (isTerminal) {
-          const textOut = error ? stringifyOut(output, error) : resolveLargeToolOutput(stringifyOut(output, error), state.conversationId);
-          const rich = buildRichToolContent(textOut, params, output, richOpts);
+          const textOut = error ? stringifyOut(output, error) : resolveLargeToolOutput(stringifyOut(output, error), state.conversationId, undefined, stepIndex);
+          if (!textOut && !failed) {
+          state.pendingToolOutputs ??= new Map();
+          state.pendingToolOutputs.set(stepIndex, {toolCallId, title});
+        }
+        const rich = buildRichToolContent(textOut, params, output, richOpts);
           if (rich.content.length) toolCall.content = rich.content;
           if (output !== undefined) toolCall.rawOutput = output;
           if (error !== undefined) toolCall.rawError = error;
@@ -596,7 +603,11 @@ export function mapAgyEvent(
           status: failed ? 'failed' : 'completed',
         };
         if (locations) update.locations = locations;
-        const textOut = error ? stringifyOut(output, error) : resolveLargeToolOutput(stringifyOut(output, error), state.conversationId);
+        const textOut = error ? stringifyOut(output, error) : resolveLargeToolOutput(stringifyOut(output, error), state.conversationId, undefined, stepIndex);
+        if (!textOut && !failed) {
+          state.pendingToolOutputs ??= new Map();
+          state.pendingToolOutputs.set(stepIndex, {toolCallId, title});
+        }
         const rich = buildRichToolContent(textOut, params, output, richOpts);
         if (rich.content.length) update.content = rich.content;
         if (output !== undefined) update.rawOutput = output;
@@ -625,6 +636,11 @@ export function mapAgyEvent(
   if (ev.event === 'result') {
     const r = (ev.result || {}) as Record<string, unknown>;
     if (r.conversation_id) state.conversationId = r.conversation_id as string;
+    for (const [index, pending] of state.pendingToolOutputs ?? []) {
+      const text = resolveLargeToolOutput('', state.conversationId, undefined, index);
+      if (text) notifications.push(notify(sessionId, {sessionUpdate:'tool_call_update',toolCallId:pending.toolCallId,title:pending.title,status:'completed',content:[{type:'content',content:{type:'text',text}}]}));
+    }
+    state.pendingToolOutputs?.clear();
 
     const resultUsage = toUsageUpdate(sessionId, r.usage, opts?.model);
     if (resultUsage) notifications.push(resultUsage);

@@ -786,3 +786,33 @@ describe('Simulated Integration Tests (Offline Mock CLI)', () => {
     });
   });
 });
+
+describe('Native output recovery extension (real service + mock CLI)', () => {
+  for (const version of [1,2]) test(`v${version} restores only requested existing native step output on resume`, async () => {
+    const root=fs.mkdtempSync(path.join(__dirname,'../scratch-recovery-'));
+    const oldBin=process.env.AGY_BIN,oldBrain=process.env.AGY_ACP_BRAIN_DIR;
+    process.env.AGY_BIN=path.resolve(__dirname,'fixtures/mock-agy-cli.cjs');
+    process.env.AGY_ACP_BRAIN_DIR=path.join(root,'brain');
+    const core=new AgySessionCore({sessionStore:path.join(root,'sessions.json'),historyStore:path.join(root,'history')});
+    try {
+      const service=version===1?new AgyAcpV1Service(core):new AgyAcpV2Service(core);
+      const created=await service.newSession({cwd:root,mcpServers:[]});
+      await service.promptSession({sessionId:created.sessionId,prompt:[{type:'text',text:'native recovery fixture'}]},()=>{});
+      const nativeId=core.sessions.get(created.sessionId)?.conversationId;
+      expect(nativeId).toBeTruthy();
+      const file=path.join(process.env.AGY_ACP_BRAIN_DIR!,nativeId!,'.system_generated/steps/17/output.txt');
+      fs.mkdirSync(path.dirname(file),{recursive:true});
+      const text=JSON.stringify({schemaVersion:1,kind:'html-artifact',id:'history-17',title:'history',html:'<svg></svg>'});
+      fs.writeFileSync(file,text);
+      const result=await service.resumeSession({sessionId:created.sessionId,cwd:root,mcpServers:[],_meta:{toolOutputRecovery:{toolCallIds:['agy-t1-s17','agy-t1-s18','../../secret']}}});
+      expect(result._meta.toolOutputRecovery.outputs).toEqual([{toolCallId:'agy-t1-s17',text}]);
+      expect(fs.readFileSync(file,'utf8')).toBe(text);
+    } finally {
+      await core.shutdown();
+      if(oldBin===undefined)delete process.env.AGY_BIN;else process.env.AGY_BIN=oldBin;
+      if(oldBrain===undefined)delete process.env.AGY_ACP_BRAIN_DIR;else process.env.AGY_ACP_BRAIN_DIR=oldBrain;
+      if(path.dirname(root)!==path.resolve(__dirname,'..'))throw Error('Unexpected test directory');
+      fs.rmSync(root,{recursive:true,force:true,maxRetries:8,retryDelay:100});
+    }
+  },15000);
+});

@@ -1,3 +1,4 @@
+import { recoverToolOutputMeta } from '../lib/large-tool-output.ts';
 import { AGENT_INFO, DEFAULT_AVAILABLE_COMMANDS } from '../core/types.ts';
 import { AgySessionCore } from '../core/session-core.ts';
 import { formatUpdateForProtocol } from '../lib/map-agy-to-acp.ts';
@@ -31,7 +32,7 @@ export class AgyAcpV1Service {
 
   async newSession(params: any): Promise<any> {
     const { session, discovery, meta } = await this.core.createSession(params, 1);
-    const mergedMeta = { ...(meta || {}), availableCommands: DEFAULT_AVAILABLE_COMMANDS };
+    const mergedMeta = { ...(meta || {}), ...recoverToolOutputMeta(session.conversationId, params), availableCommands: DEFAULT_AVAILABLE_COMMANDS };
     return {
       sessionId: session.sessionId,
       configOptions: buildV1ConfigOptions(discovery, session),
@@ -42,7 +43,7 @@ export class AgyAcpV1Service {
 
   async resumeSession(params: any): Promise<any> {
     const { session, discovery, meta } = await this.core.resumeSession(params, 1);
-    const mergedMeta = { ...(meta || {}), availableCommands: DEFAULT_AVAILABLE_COMMANDS };
+    const mergedMeta = { ...(meta || {}), ...recoverToolOutputMeta(session.conversationId, params), availableCommands: DEFAULT_AVAILABLE_COMMANDS };
     return {
       configOptions: buildV1ConfigOptions(discovery, session),
       availableCommands: DEFAULT_AVAILABLE_COMMANDS,
@@ -57,7 +58,7 @@ export class AgyAcpV1Service {
     // Read-only history replay: do not pre-spawn agy for it.
     const { session, discovery, meta } = await this.core.resumeSession(params, 1, { warmup: false });
     await this.core.replayHistory(session.sessionId, 1, notifyClient);
-    const mergedMeta = { ...(meta || {}), availableCommands: DEFAULT_AVAILABLE_COMMANDS };
+    const mergedMeta = { ...(meta || {}), ...recoverToolOutputMeta(session.conversationId, params), availableCommands: DEFAULT_AVAILABLE_COMMANDS };
     return {
       configOptions: buildV1ConfigOptions(discovery, session),
       availableCommands: DEFAULT_AVAILABLE_COMMANDS,

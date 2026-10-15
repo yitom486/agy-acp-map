@@ -1,3 +1,4 @@
+import { recoverToolOutputMeta } from '../lib/large-tool-output.ts';
 import { AGENT_INFO, BRIDGE_CAPABILITIES, DEFAULT_AVAILABLE_COMMANDS } from '../core/types.ts';
 import { AgySessionCore } from '../core/session-core.ts';
 import { formatUpdateForProtocol } from '../lib/map-agy-to-acp.ts';
@@ -33,7 +34,7 @@ export class AgyAcpV2Service {
 
   async newSession(params: any): Promise<any> {
     const { session, discovery, meta } = await this.core.createSession(params, 2);
-    const mergedMeta = { ...(meta || {}), availableCommands: DEFAULT_AVAILABLE_COMMANDS };
+    const mergedMeta = { ...(meta || {}), ...recoverToolOutputMeta(session.conversationId, params), availableCommands: DEFAULT_AVAILABLE_COMMANDS };
     return {
       sessionId: session.sessionId,
       configOptions: buildV2ConfigOptions(discovery, session),
@@ -53,7 +54,7 @@ export class AgyAcpV2Service {
       }
       await this.core.replayHistory(session.sessionId, 2, notifyClient);
     }
-    const mergedMeta = { ...(meta || {}), availableCommands: DEFAULT_AVAILABLE_COMMANDS };
+    const mergedMeta = { ...(meta || {}), ...recoverToolOutputMeta(session.conversationId, params), availableCommands: DEFAULT_AVAILABLE_COMMANDS };
     return {
       configOptions: buildV2ConfigOptions(discovery, session),
       availableCommands: DEFAULT_AVAILABLE_COMMANDS,

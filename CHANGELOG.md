@@ -1,3 +1,10 @@
+## v0.1.26 — Native empty output and history recovery (2026-10-16)
+
+- Recover generated step output when native tool events omit the output field, not only when they contain a file notice. Retry at the result event when the conversation ID or file was not ready at tool completion.
+- Add optional session resume/load metadata recovery for up to 20 client-owned tool IDs. Reads remain bound to the native conversation, canonical generated output paths and byte limits. No model call or duplicate history is needed.
+- Cover native empty-output events, delayed conversation IDs, failed tools, and real v1/v2 service recovery with a mock CLI.
+
+---
 ## v0.1.25 — Restore large MCP tool output (2026-10-16)
 
 - Resolve agy CLI's large-output file notices into ACP text content, so clients receive actual MCP results instead of file pointers.

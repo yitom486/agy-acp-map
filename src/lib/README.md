@@ -116,3 +116,5 @@ bun test src/lib/session-store.test.ts
 
 
 `large-tool-output.ts`（+ `.test.ts`）恢复 agy CLI 外置的大型工具输出：仅接受当前原生 conversation 的 `.system_generated/steps/<index>/output.txt`，按 realpath 校验并限制 1MiB，跨会话/越界/缺失/超限保留原始引用。`map-agy-to-acp.ts` 在终态回传 ACP 正文前调用，MCP 不再只剩文件指针。
+
+原生事件可能省略 output；按当前 conversation + step index 读取同一受限产物，终态时 ID/文件未就绪则于 result 重试。v1/v2 session resume/load 的可选 _meta.toolOutputRecovery 接受最多 20 个既有 toolCallId，返回有界正文供宿主修复原消息；不重放整套历史，不调用模型。AGY_ACP_BRAIN_DIR 可指定受限缓存根（默认用户 .gemini/antigravity-cli/brain）。
