@@ -41,11 +41,25 @@ export interface MapperState {
   prevCumulativeInput?: number;
   prevCumulativeOutput?: number;
   prevCumulativeTotal?: number;
+  /**
+   * 会话累计的缓存命中 token 基线。
+   * agy 的 cache_read_tokens / cached_tokens 与 input/output 一样是**会话累计量**，
+   * 必须单独记基线才能算出「本轮缓存」，否则会把整场会话的缓存量当成一次请求的。
+   */
+  prevCumulativeCache?: number;
 
   /** Turn-level tokens observed from streaming step_update. */
   stepInputTokens?: number;
   stepOutputTokens?: number;
   stepCacheTokens?: number;
+  /**
+   * 最近一次模型请求的提示词大小（本轮新增输入 + 本轮缓存命中）。
+   *
+   * 一个用户轮次里可能有多次模型请求（工具循环），`result.usage` 的 input/output
+   * 是整轮求和——把它当「当前上下文占用」会随工具轮次线性膨胀。
+   * 真正该显示的是最后一次请求装进窗口的提示词量，这里逐次覆盖记录。
+   */
+  stepPromptTokens?: number;
 }
 
 export interface AcpNotification {
@@ -75,9 +89,11 @@ export function createMapperState(richRoots?: FileToAcpImageOpts): MapperState {
     prevCumulativeInput: undefined,
     prevCumulativeOutput: undefined,
     prevCumulativeTotal: undefined,
+    prevCumulativeCache: undefined,
     stepInputTokens: undefined,
     stepOutputTokens: undefined,
     stepCacheTokens: undefined,
+    stepPromptTokens: undefined,
   };
 }
 
@@ -100,6 +116,7 @@ export function resetTurnState(state: MapperState): MapperState {
     stepInputTokens: undefined,
     stepOutputTokens: undefined,
     stepCacheTokens: undefined,
+    stepPromptTokens: undefined,
   };
 }
 
@@ -421,6 +438,22 @@ function usageSizeHint(u: AgyUsage | undefined): number | undefined {
 }
 
 /**
+ * 把 agy 的缓存命中 token 归一化为「本轮」值。
+ *
+ * agy 的 cache_read_tokens / cached_tokens 与 input_tokens / output_tokens 一样，
+ * 是**整个会话的累计量**。ACP 的 `used` 语义是「当前上下文窗口里装了多少 token」，
+ * 所以必须取本轮增量；直接拿累计值加到本轮输入上，会让 used 远超窗口
+ * （实测 1,439,625 / 1,048,576），缓存命中率也会算出 1338% 这种数字。
+ */
+function turnCacheTokens(cumCache: number | undefined, state: MapperState): number {
+  if (typeof cumCache !== 'number' || !Number.isFinite(cumCache) || cumCache <= 0) return 0;
+  const prev = state.prevCumulativeCache;
+  // 首轮、或计数器被重置（变小）：累计值即本轮值
+  if (prev === undefined || cumCache < prev) return Math.floor(cumCache);
+  return Math.floor(cumCache - prev);
+}
+
+/**
  * Progressive usage update during streaming (step_update).
  * `s.usage` in agy carries step-level delta tokens.
  * Context fill = input_tokens + cache_read_tokens (the actual prompt loaded in context).
@@ -458,18 +491,31 @@ function toStepUsageUpdate(
 
   if (input !== undefined) state.stepInputTokens = input;
   if (output !== undefined) state.stepOutputTokens = output;
-  if (typeof cached === 'number' && Number.isFinite(cached)) state.stepCacheTokens = cached;
 
-  const cacheTokens = typeof cached === 'number' && Number.isFinite(cached) ? cached : 0;
-  const used = (rawInput ?? input ?? 0) + cacheTokens;
+  // 缓存量按本轮增量折算（agy 给的是会话累计值）
+  const cacheTokens = turnCacheTokens(
+    typeof cached === 'number' && Number.isFinite(cached) ? cached : undefined,
+    state,
+  );
+  if (cacheTokens > 0) state.stepCacheTokens = cacheTokens;
+
+  // 上下文占用 = 本轮提示词 = 本轮新增输入 + 本轮缓存命中。
+  // 缓存命中是提示词的一部分，不是在此之上的额外叠加。
+  const used = (input ?? rawInput ?? 0) + cacheTokens;
   if (typeof used !== 'number' || used <= 0) return null;
+  // 记录「最近一次请求的提示词」，供 result 阶段作为上下文占用（而不是整轮求和）
+  state.stepPromptTokens = used;
 
   const meta: Record<string, unknown> = {};
   if (typeof u.thinking_tokens === 'number') meta.thinkingTokens = u.thinking_tokens;
   if (input !== undefined) meta.inputTokens = input;
   if (output !== undefined) meta.outputTokens = output;
   if (typeof u.total_tokens === 'number') meta.totalTokens = u.total_tokens;
-  if (cacheTokens > 0) meta.cachedTokens = cacheTokens;
+  if (cacheTokens > 0) {
+    meta.cachedTokens = cacheTokens;
+    // 缓存命中率 = 缓存命中 / 本次提示词（输入 + 缓存）。恒在 0~1 之间。
+    meta.cacheHitRate = cacheTokens / used;
+  }
 
   return notify(sessionId, {
     sessionUpdate: 'usage_update',
@@ -489,8 +535,13 @@ function toStepUsageUpdate(
  * We compute this turn's actual context and generated output:
  * - turnInput = cumInput - prevCumulativeInput (or stepInputTokens if resumed)
  * - turnOutput = cumOutput - prevCumulativeOutput (or stepOutputTokens)
- * - used = cumInput + cacheTokens (prompt tokens currently in context)
+ * - turnCache = cumCache - prevCumulativeCache
+ * - used = turnInput + turnCache (this turn's prompt size = tokens currently in context)
  * - Session-wide cumulative totals are surfaced under _meta for billing/telemetry.
+ *
+ * 注意 `used` 绝不能再叠加会话累计量：曾经写成 `cumInput + cacheTokens`，
+ * 直接把整场会话的缓存量算进单次上下文，UI 才会出现 1,439,625 / 1,048,576 与
+ * 1338% 的缓存命中率。
  */
 function toResultUsageUpdate(
   sessionId: string,
@@ -543,16 +594,28 @@ function toResultUsageUpdate(
     turnTotal = cumTotal;
   }
 
-  const cacheTokens = typeof cached === 'number' && Number.isFinite(cached) ? cached : 0;
-  const contextFill = turnInput + cacheTokens;
-  const used = contextFill > 0 ? contextFill : turnInput;
+  const cumCache =
+    typeof cached === 'number' && Number.isFinite(cached) ? cached : undefined;
+  const turnCache = turnCacheTokens(cumCache, state);
+  const turnPrompt = turnInput + turnCache;
+  // 上下文占用 = 最近一次请求实际装进窗口的提示词量。
+  // 一轮里可能有多条模型请求（工具循环），整轮求和会随请求数线性膨胀；
+  // 只有拿不到 step 数据时才退回本轮增量。
+  const used = state.stepPromptTokens && state.stepPromptTokens > 0 ? state.stepPromptTokens : turnPrompt;
 
   const meta: Record<string, unknown> = {};
   if (typeof u.thinking_tokens === 'number') meta.thinkingTokens = u.thinking_tokens;
   meta.inputTokens = turnInput;
   meta.outputTokens = turnOutput;
-  meta.totalTokens = turnTotal ?? (turnInput + turnOutput);
-  if (cacheTokens > 0) meta.cachedTokens = cacheTokens;
+  meta.totalTokens = turnTotal ?? (turnInput + turnCache + turnOutput);
+  // 提示词总量 = 新增输入 + 缓存命中，是 `used` 与缓存命中率的共同分母
+  meta.promptTokens = used;
+  if (turnCache > 0) meta.cachedTokens = turnCache;
+  if (cumCache !== undefined) {
+    // 命中率必须和 used 用同一口径：used 取「最后一次请求」时，分子也要取那一次的缓存量
+    const cacheForRate = state.stepPromptTokens ? (state.stepCacheTokens ?? 0) : turnCache;
+    meta.cacheHitRate = used > 0 ? Math.min(1, cacheForRate / used) : 0;
+  }
 
   // Preserve session cumulative figures for billing/stats
   meta.sessionInputTokens = cumInput;
@@ -563,6 +626,7 @@ function toResultUsageUpdate(
   state.prevCumulativeInput = cumInput;
   state.prevCumulativeOutput = cumOutput;
   if (cumTotal !== undefined) state.prevCumulativeTotal = cumTotal;
+  if (cumCache !== undefined) state.prevCumulativeCache = cumCache;
 
   return notify(sessionId, {
     sessionUpdate: 'usage_update',

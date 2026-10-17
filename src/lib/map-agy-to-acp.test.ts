@@ -264,6 +264,82 @@ describe('mapAgyEvent', () => {
     expect(usage!.params.update.size).toBe(2_000_000);
   });
 
+  test('cumulative cache_read_tokens is normalised to a per-turn value', () => {
+    const state = createMapperState();
+    const usageOf = (r: ReturnType<typeof mapAgyEvent>) =>
+      r.notifications.find((n) => n.params.update.sessionUpdate === 'usage_update')!.params.update as any;
+
+    // 第 1 轮：累计 input 100k / 累计缓存 100k
+    const u1 = usageOf(mapAgyEvent('s1', {
+      event: 'result',
+      result: {
+        status: 'SUCCESS',
+        conversation_id: 'c1',
+        response: 'a',
+        usage: { total_tokens: 202000, input_tokens: 100000, output_tokens: 2000, cache_read_tokens: 100000 },
+      },
+    }, state, { model: 'gemini-3.8-flash-high' }));
+    expect(u1.used).toBe(200000); // 本轮提示词 = 新增 100k + 缓存 100k
+    expect(u1._meta.cachedTokens).toBe(100000);
+    expect(u1._meta.inputTokens).toBe(100000);
+    expect(u1._meta.cacheHitRate).toBeCloseTo(0.5, 5);
+
+    // 第 2 轮：累计值继续增长（会话累计口径）
+    const u2 = usageOf(mapAgyEvent('s1', {
+      event: 'result',
+      result: {
+        status: 'SUCCESS',
+        conversation_id: 'c1',
+        response: 'b',
+        usage: { total_tokens: 214000, input_tokens: 170000, output_tokens: 4000, cache_read_tokens: 170000 },
+      },
+    }, state, { model: 'gemini-3.8-flash-high' }));
+
+    // 只算本轮增量：input 70k + cache 70k，而不是把 170k 累计缓存再叠一次
+    expect(u2._meta.inputTokens).toBe(70000);
+    expect(u2._meta.cachedTokens).toBe(70000);
+    expect(u2.used).toBe(140000);
+    // 上下文占用绝不能超过窗口
+    expect(u2.used).toBeLessThanOrEqual(u2.size);
+    // 缓存命中率 = 缓存 / 提示词，恒 ≤ 100%
+    expect(u2._meta.cacheHitRate).toBeCloseTo(0.5, 5);
+    expect(u2._meta.cacheHitRate).toBeLessThanOrEqual(1);
+  });
+
+  test('multi-request turn reports the last request prompt, not the sum', () => {
+    const state = createMapperState();
+    // 一个工具循环轮次里的三次模型请求，每次提示词约 100k
+    for (const [i, cache] of [[1, 98000], [2, 99000], [3, 100000]] as const) {
+      mapAgyEvent('s1', {
+        event: 'step_update',
+        step_update: {
+          step_index: i,
+          step_type: 'agent_response',
+          state: 'DONE',
+          usage: { input_tokens: 2000, output_tokens: 100, cache_read_tokens: cache, total_tokens: 2100 },
+        },
+      }, state, { model: 'gemini-3.8-flash-high' });
+    }
+
+    const res = mapAgyEvent('s1', {
+      event: 'result',
+      result: {
+        status: 'SUCCESS',
+        conversation_id: 'c-loop',
+        response: 'x',
+        // 整轮求和：input 6k（3×2k）、cache 297k
+        usage: { input_tokens: 6000, output_tokens: 300, cache_read_tokens: 100000, total_tokens: 6300 },
+      },
+    }, state, { model: 'gemini-3.8-flash-high' });
+
+    const u = res.notifications.find((n) => n.params.update.sessionUpdate === 'usage_update')!.params.update as any;
+    // 最后一次请求：2,000 新增 + 100,000 缓存 —— 而不是 6,000 + 297,000
+    expect(u.used).toBe(102000);
+    expect(u.used).toBeLessThanOrEqual(u.size);
+    // 命中率跟着 used 的口径：100,000 / 102,000
+    expect(u._meta.cacheHitRate).toBeCloseTo(100000 / 102000, 5);
+  });
+
   test('real wire shape: agent_response step usage emits progressive update', () => {
     const state = createMapperState();
     const { notifications } = mapAgyEvent('s1', {

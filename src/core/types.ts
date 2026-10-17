@@ -8,7 +8,7 @@ import { humanizeModelName } from '../lib/agy-discovery.ts';
 export const AGENT_INFO = {
   name: 'agy-acp',
   title: 'agy ACP (stream-json)',
-  version: '0.1.28',
+  version: '0.1.30',
 };
 
 export const BRIDGE_CAPABILITIES = {
