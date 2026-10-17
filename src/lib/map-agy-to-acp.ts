@@ -36,6 +36,16 @@ export interface MapperState {
   retryCount?: number;
   /** Session roots for image allowlist (set by server). */
   richRoots?: FileToAcpImageOpts;
+
+  /** Session cumulative baseline (from prior turns) to compute turn deltas. */
+  prevCumulativeInput?: number;
+  prevCumulativeOutput?: number;
+  prevCumulativeTotal?: number;
+
+  /** Turn-level tokens observed from streaming step_update. */
+  stepInputTokens?: number;
+  stepOutputTokens?: number;
+  stepCacheTokens?: number;
 }
 
 export interface AcpNotification {
@@ -62,6 +72,12 @@ export function createMapperState(richRoots?: FileToAcpImageOpts): MapperState {
     emittedThoughtDelta: false,
     retryCount: 0,
     richRoots,
+    prevCumulativeInput: undefined,
+    prevCumulativeOutput: undefined,
+    prevCumulativeTotal: undefined,
+    stepInputTokens: undefined,
+    stepOutputTokens: undefined,
+    stepCacheTokens: undefined,
   };
 }
 
@@ -81,6 +97,9 @@ export function resetTurnState(state: MapperState): MapperState {
     emittedTextDelta: false,
     emittedThoughtDelta: false,
     retryCount: 0,
+    stepInputTokens: undefined,
+    stepOutputTokens: undefined,
+    stepCacheTokens: undefined,
   };
 }
 
@@ -368,6 +387,11 @@ interface AgyUsage {
   thinking_tokens?: number;
   input_tokens?: number;
   output_tokens?: number;
+  cached_tokens?: number;
+  cache_read_tokens?: number;
+  cached_input_tokens?: number;
+  cache_read_input_tokens?: number;
+  cachedTokens?: number;
   // Forward-compatible size hints: agy does not emit these today
   // (`models` prints id+name only), but if a future CLI reports its window,
   // it outranks the static table (e.g. a 2M Gemini needs no code change).
@@ -397,38 +421,143 @@ function usageSizeHint(u: AgyUsage | undefined): number | undefined {
 }
 
 /**
- * Build a usage_update from an agy usage block.
- *
- * `used` is the cumulative INPUT count (the actual context fill — agy
- * resends system prompt + tool schemas + full history every step, which is
- * why it climbs fast and why output tokens must not be folded in twice).
- * `size` is the model's real window (never a moving max(used) target, so an
- * overflow stays visible instead of self-normalizing to 100%).
+ * Progressive usage update during streaming (step_update).
+ * `s.usage` in agy carries step-level delta tokens.
+ * Context fill = input_tokens + cache_read_tokens (the actual prompt loaded in context).
  */
-function toUsageUpdate(
+function toStepUsageUpdate(
   sessionId: string,
   usage: unknown,
+  state: MapperState,
   model?: string,
 ): AcpNotification | null {
   const u = usage as AgyUsage | undefined;
-  const used = typeof u?.input_tokens === 'number' ? u.input_tokens : u?.total_tokens;
+  if (!u || typeof u !== 'object') return null;
+
+  const input = typeof u.input_tokens === 'number' ? u.input_tokens : undefined;
+  const output = typeof u.output_tokens === 'number' ? u.output_tokens : undefined;
+  const cached =
+    (u as any).cache_read_tokens ??
+    u.cached_tokens ??
+    (u as any).cached_input_tokens ??
+    (u as any).cache_read_input_tokens ??
+    (u as any).cachedTokens;
+
+  if (input !== undefined) state.stepInputTokens = input;
+  if (output !== undefined) state.stepOutputTokens = output;
+  if (typeof cached === 'number' && Number.isFinite(cached)) state.stepCacheTokens = cached;
+
+  const cacheTokens = typeof cached === 'number' && Number.isFinite(cached) ? cached : 0;
+  const contextFill = (input ?? 0) + cacheTokens;
+  const used = contextFill > 0 ? contextFill : (input ?? u.total_tokens);
   if (typeof used !== 'number') return null;
-  // agy never streams thought text (thinking only surfaces as token
-  // counts), so expose the breakdown for clients/debugging instead of
-  // fabricating reasoning content.
+
   const meta: Record<string, unknown> = {};
-  if (typeof u?.thinking_tokens === 'number') meta.thinkingTokens = u.thinking_tokens;
-  if (typeof u?.input_tokens === 'number') meta.inputTokens = u.input_tokens;
-  if (typeof u?.output_tokens === 'number') meta.outputTokens = u.output_tokens;
-  if (typeof u?.total_tokens === 'number') meta.totalTokens = u.total_tokens;
-  const cached = (u as any)?.cached_tokens ?? (u as any)?.cached_input_tokens ?? (u as any)?.cache_read_input_tokens ?? (u as any)?.cachedTokens;
-  if (typeof cached === 'number' && Number.isFinite(cached)) meta.cachedTokens = cached;
+  if (typeof u.thinking_tokens === 'number') meta.thinkingTokens = u.thinking_tokens;
+  if (input !== undefined) meta.inputTokens = input;
+  if (output !== undefined) meta.outputTokens = output;
+  if (typeof u.total_tokens === 'number') meta.totalTokens = u.total_tokens;
+  if (cacheTokens > 0) meta.cachedTokens = cacheTokens;
+
   return notify(sessionId, {
     sessionUpdate: 'usage_update',
     used,
     size: usageSizeHint(u) ?? modelContextWindow(model),
     ...(Object.keys(meta).length ? { _meta: meta } : {}),
   });
+}
+
+/**
+ * Final usage update on turn result (result.usage).
+ *
+ * agy CLI's `result.usage` is a running session accumulator across all turns.
+ * ACP's `used` is strictly "Tokens currently in context" (the actual prompt size
+ * loaded into the model's context window for this turn).
+ *
+ * We compute this turn's actual context and generated output:
+ * - turnInput = cumInput - prevCumulativeInput (or stepInputTokens if resumed)
+ * - turnOutput = cumOutput - prevCumulativeOutput (or stepOutputTokens)
+ * - used = turnInput + cacheTokens (prompt tokens currently in context)
+ * - Session-wide cumulative totals are surfaced under _meta for billing/telemetry.
+ */
+function toResultUsageUpdate(
+  sessionId: string,
+  usage: unknown,
+  state: MapperState,
+  model?: string,
+): AcpNotification | null {
+  const u = usage as AgyUsage | undefined;
+  if (!u || typeof u !== 'object') return null;
+
+  const cumInput = typeof u.input_tokens === 'number' ? u.input_tokens : u.total_tokens;
+  const cumOutput = typeof u.output_tokens === 'number' ? u.output_tokens : 0;
+  const cumTotal = typeof u.total_tokens === 'number' ? u.total_tokens : undefined;
+  const cached =
+    (u as any).cache_read_tokens ??
+    u.cached_tokens ??
+    (u as any).cached_input_tokens ??
+    (u as any).cache_read_input_tokens ??
+    (u as any).cachedTokens ??
+    state.stepCacheTokens;
+
+  if (typeof cumInput !== 'number') return null;
+
+  let turnInput: number;
+  let turnOutput: number;
+  let turnTotal: number | undefined;
+
+  if (state.prevCumulativeInput !== undefined) {
+    turnInput = Math.max(0, cumInput - state.prevCumulativeInput);
+    turnOutput = Math.max(0, cumOutput - (state.prevCumulativeOutput ?? 0));
+    if (cumTotal !== undefined && state.prevCumulativeTotal !== undefined) {
+      turnTotal = Math.max(0, cumTotal - state.prevCumulativeTotal);
+    }
+  } else if (state.stepInputTokens !== undefined && cumInput > state.stepInputTokens) {
+    turnInput = state.stepInputTokens;
+    turnOutput = state.stepOutputTokens ?? Math.max(0, cumOutput - (state.prevCumulativeOutput ?? 0));
+  } else {
+    // First turn of a session
+    turnInput = cumInput;
+    turnOutput = cumOutput;
+    turnTotal = cumTotal;
+  }
+
+  const cacheTokens = typeof cached === 'number' && Number.isFinite(cached) ? cached : 0;
+  const contextFill = turnInput + cacheTokens;
+  const used = contextFill > 0 ? contextFill : turnInput;
+
+  const meta: Record<string, unknown> = {};
+  if (typeof u.thinking_tokens === 'number') meta.thinkingTokens = u.thinking_tokens;
+  meta.inputTokens = turnInput;
+  meta.outputTokens = turnOutput;
+  meta.totalTokens = turnTotal ?? (turnInput + turnOutput);
+  if (cacheTokens > 0) meta.cachedTokens = cacheTokens;
+
+  // Preserve session cumulative figures for billing/stats
+  meta.sessionInputTokens = cumInput;
+  meta.sessionOutputTokens = cumOutput;
+  if (cumTotal !== undefined) meta.sessionTotalTokens = cumTotal;
+
+  // Advance baseline for subsequent turns
+  state.prevCumulativeInput = cumInput;
+  state.prevCumulativeOutput = cumOutput;
+  if (cumTotal !== undefined) state.prevCumulativeTotal = cumTotal;
+
+  return notify(sessionId, {
+    sessionUpdate: 'usage_update',
+    used,
+    size: usageSizeHint(u) ?? modelContextWindow(model),
+    _meta: meta,
+  });
+}
+
+function toUsageUpdate(
+  sessionId: string,
+  usage: unknown,
+  model?: string,
+): AcpNotification | null {
+  const dummyState = createMapperState();
+  return toResultUsageUpdate(sessionId, usage, dummyState, model);
 }
 
 function mapStopReason(status: unknown, error: unknown): string {
@@ -537,10 +666,9 @@ export function mapAgyEvent(
         );
       }
 
-      // Progressive quota: agy step_updates already carry the cumulative
-      // input count, so Zed's % climbs during the turn instead of jumping
-      // once at result time. Replace semantics — latest wins.
-      const stepUsage = toUsageUpdate(sessionId, s.usage, opts?.model);
+      // Progressive usage: agy step_updates report step-level deltas.
+      // Context fill is the prompt tokens loaded for this step.
+      const stepUsage = toStepUsageUpdate(sessionId, s.usage, state, opts?.model);
       if (stepUsage) notifications.push(stepUsage);
 
       return { notifications, state };
@@ -642,7 +770,7 @@ export function mapAgyEvent(
     }
     state.pendingToolOutputs?.clear();
 
-    const resultUsage = toUsageUpdate(sessionId, r.usage, opts?.model);
+    const resultUsage = toResultUsageUpdate(sessionId, r.usage, state, opts?.model);
     if (resultUsage) notifications.push(resultUsage);
 
     // Surface structured_output (e.g. from --json-schema) as a final JSON message chunk

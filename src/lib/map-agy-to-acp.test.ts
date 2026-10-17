@@ -415,4 +415,76 @@ describe('v0.1.3 mapper hardening', () => {
       expect(idle!.params.update.stopReason).toBe('cancelled');
     }
   });
+
+  test('multi-turn usage computes turn deltas and context fill without cumulative inflation', () => {
+    let state = createMapperState();
+
+    // Turn 1: user sends initial prompt
+    const t1 = mapAgyEvent(
+      's1',
+      {
+        event: 'result',
+        result: {
+          status: 'SUCCESS',
+          conversation_id: 'c-multi',
+          response: 'turn 1 done',
+          usage: { input_tokens: 12093, output_tokens: 9, total_tokens: 12102 },
+        },
+      },
+      state,
+      { model: 'gemini-3.8-flash-high' },
+    );
+    state = resetTurnState(t1.state);
+
+    const u1 = t1.notifications.find((n) => n.params.update.sessionUpdate === 'usage_update')!;
+    expect(u1.params.update.used).toBe(12093);
+    expect((u1.params.update._meta as any).inputTokens).toBe(12093);
+    expect((u1.params.update._meta as any).outputTokens).toBe(9);
+    expect((u1.params.update._meta as any).sessionInputTokens).toBe(12093);
+
+    // Turn 2: streaming step_update gives delta
+    const t2Step = mapAgyEvent(
+      's1',
+      {
+        event: 'step_update',
+        step_update: {
+          step_index: 2,
+          step_type: 'agent_response',
+          state: 'DONE',
+          usage: { input_tokens: 2119, output_tokens: 8, cache_read_tokens: 10045, total_tokens: 2127 },
+        },
+      },
+      state,
+      { model: 'gemini-3.8-flash-high' },
+    );
+    state = t2Step.state;
+
+    const u2Step = t2Step.notifications.find((n) => n.params.update.sessionUpdate === 'usage_update')!;
+    // used is prompt context: 2119 + 10045 = 12164
+    expect(u2Step.params.update.used).toBe(12164);
+
+    // Turn 2: final result with agy cumulative sum
+    const t2Result = mapAgyEvent(
+      's1',
+      {
+        event: 'result',
+        result: {
+          status: 'SUCCESS',
+          conversation_id: 'c-multi',
+          response: 'turn 2 done',
+          usage: { input_tokens: 14212, output_tokens: 17, cache_read_tokens: 10045, total_tokens: 14229 },
+        },
+      },
+      state,
+      { model: 'gemini-3.8-flash-high' },
+    );
+
+    const u2Result = t2Result.notifications.find((n) => n.params.update.sessionUpdate === 'usage_update')!;
+    // used must NOT be 14212 + 12093! It must be the turn prompt context (2119 + 10045 = 12164)
+    expect(u2Result.params.update.used).toBe(12164);
+    expect((u2Result.params.update._meta as any).inputTokens).toBe(2119);
+    expect((u2Result.params.update._meta as any).outputTokens).toBe(8);
+    expect((u2Result.params.update._meta as any).sessionInputTokens).toBe(14212);
+    expect((u2Result.params.update._meta as any).sessionOutputTokens).toBe(17);
+  });
 });
