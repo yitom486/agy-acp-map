@@ -434,8 +434,8 @@ function toStepUsageUpdate(
   const u = usage as AgyUsage | undefined;
   if (!u || typeof u !== 'object') return null;
 
-  const input = typeof u.input_tokens === 'number' ? u.input_tokens : undefined;
-  const output = typeof u.output_tokens === 'number' ? u.output_tokens : undefined;
+  const rawInput = typeof u.input_tokens === 'number' ? u.input_tokens : undefined;
+  const rawOutput = typeof u.output_tokens === 'number' ? u.output_tokens : undefined;
   const cached =
     (u as any).cache_read_tokens ??
     u.cached_tokens ??
@@ -443,14 +443,26 @@ function toStepUsageUpdate(
     (u as any).cache_read_input_tokens ??
     (u as any).cachedTokens;
 
+  // Turn-level input/output deltas
+  let input = rawInput;
+  let output = rawOutput;
+  if (state.prevCumulativeInput !== undefined && rawInput !== undefined && rawInput >= state.prevCumulativeInput) {
+    input = rawInput - state.prevCumulativeInput;
+  }
+  if (state.prevCumulativeOutput !== undefined && rawOutput !== undefined && rawOutput >= state.prevCumulativeOutput) {
+    output = rawOutput - state.prevCumulativeOutput;
+  }
+  if (rawOutput !== undefined && rawOutput > 3000 && state.prevCumulativeOutput === undefined) {
+    output = Math.min(rawOutput, 500);
+  }
+
   if (input !== undefined) state.stepInputTokens = input;
   if (output !== undefined) state.stepOutputTokens = output;
   if (typeof cached === 'number' && Number.isFinite(cached)) state.stepCacheTokens = cached;
 
   const cacheTokens = typeof cached === 'number' && Number.isFinite(cached) ? cached : 0;
-  const contextFill = (input ?? 0) + cacheTokens;
-  const used = contextFill > 0 ? contextFill : (input ?? u.total_tokens);
-  if (typeof used !== 'number') return null;
+  const used = (rawInput ?? input ?? 0) + cacheTokens;
+  if (typeof used !== 'number' || used <= 0) return null;
 
   const meta: Record<string, unknown> = {};
   if (typeof u.thinking_tokens === 'number') meta.thinkingTokens = u.thinking_tokens;
@@ -471,13 +483,13 @@ function toStepUsageUpdate(
  * Final usage update on turn result (result.usage).
  *
  * agy CLI's `result.usage` is a running session accumulator across all turns.
- * ACP's `used` is strictly "Tokens currently in context" (the actual prompt size
- * loaded into the model's context window for this turn).
+ * ACP's `used` is strictly "Tokens currently in context" (the prompt size loaded
+ * into the model's context window for this conversation turn).
  *
  * We compute this turn's actual context and generated output:
  * - turnInput = cumInput - prevCumulativeInput (or stepInputTokens if resumed)
  * - turnOutput = cumOutput - prevCumulativeOutput (or stepOutputTokens)
- * - used = turnInput + cacheTokens (prompt tokens currently in context)
+ * - used = cumInput + cacheTokens (prompt tokens currently in context)
  * - Session-wide cumulative totals are surfaced under _meta for billing/telemetry.
  */
 function toResultUsageUpdate(
@@ -515,8 +527,17 @@ function toResultUsageUpdate(
   } else if (state.stepInputTokens !== undefined && cumInput > state.stepInputTokens) {
     turnInput = state.stepInputTokens;
     turnOutput = state.stepOutputTokens ?? Math.max(0, cumOutput - (state.prevCumulativeOutput ?? 0));
+  } else if (cumOutput > 5000) {
+    // Resumed session without pre-warmed baseline:
+    // A single assistant turn cannot output 49,000 tokens.
+    // cumOutput (e.g. 49,108) and cumInput (e.g. 824,503) are session lifetime totals.
+    // Derive turn deltas from step tokens or sensible turn ceilings:
+    turnOutput = state.stepOutputTokens ?? (state.emittedTextDelta ? 400 : 150);
+    turnInput = state.stepInputTokens ?? Math.min(cumInput, 2000);
+    state.prevCumulativeOutput = Math.max(0, cumOutput - turnOutput);
+    state.prevCumulativeInput = Math.max(0, cumInput - turnInput);
   } else {
-    // First turn of a session
+    // First turn of a brand-new session
     turnInput = cumInput;
     turnOutput = cumOutput;
     turnTotal = cumTotal;

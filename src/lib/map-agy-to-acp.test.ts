@@ -487,4 +487,32 @@ describe('v0.1.3 mapper hardening', () => {
     expect((u2Result.params.update._meta as any).sessionInputTokens).toBe(14212);
     expect((u2Result.params.update._meta as any).sessionOutputTokens).toBe(17);
   });
+
+  test('resumed long session does not dump cumulative 800k tokens into turn delta', () => {
+    // When connecting to an ongoing agy conversation with 824k lifetime input & 49k lifetime output
+    const state = createMapperState();
+    const res = mapAgyEvent(
+      's-long',
+      {
+        event: 'result',
+        result: {
+          status: 'SUCCESS',
+          conversation_id: 'c-long',
+          response: 'diagram rendered',
+          usage: { input_tokens: 824503, output_tokens: 49108, total_tokens: 873611 },
+        },
+      },
+      state,
+      { model: 'gemini-3.8-flash-high' },
+    );
+
+    const usage = res.notifications.find((n) => n.params.update.sessionUpdate === 'usage_update')!;
+    const meta = usage.params.update._meta as any;
+    // Turn output must NOT be 49,108 (an entire novel)
+    expect(meta.outputTokens).toBeLessThan(1000);
+    // Lifetime totals are preserved
+    expect(meta.sessionInputTokens).toBe(824503);
+    expect(meta.sessionOutputTokens).toBe(49108);
+    expect(meta.sessionTotalTokens).toBe(873611);
+  });
 });
