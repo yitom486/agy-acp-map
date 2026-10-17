@@ -18,10 +18,39 @@ let cached: DiscoveryResult | null = null;
 let cachedBin: string | null = null;
 let inflight: Promise<DiscoveryResult> | null = null;
 
+export const parsedModelNames = new Map<string, string>();
+
+/**
+ * Known Antigravity model human-readable names.
+ */
+export const KNOWN_AGY_MODEL_NAMES: Record<string, string> = {
+  'gemini-4-argon-medium': 'Gemini 4 Argon (Medium)',
+  'gemini-4-argon-high': 'Gemini 4 Argon (High)',
+  'gemini-4-argon-low': 'Gemini 4 Argon (Low)',
+  'gemini-3.8-flash-high': 'Gemini 3.8 Flash (High)',
+  'gemini-3.8-flash-medium': 'Gemini 3.8 Flash (Medium)',
+  'gemini-3.8-flash-low': 'Gemini 3.8 Flash (Low)',
+  'claude-opus-5-5-low': 'Claude Opus 5.5 (Low)',
+  'claude-opus-5-5-medium': 'Claude Opus 5.5 (Medium)',
+  'claude-opus-5-5-high': 'Claude Opus 5.5 (High)',
+  'claude-sonnet-5-5-low': 'Claude Sonnet 5.5 (Low)',
+  'claude-sonnet-5-5-medium': 'Claude Sonnet 5.5 (Medium)',
+  'claude-sonnet-5-5-high': 'Claude Sonnet 5.5 (High)',
+  'claude-sonnet-4-6': 'Claude Sonnet 4.6',
+  'claude-opus-4-6-thinking': 'Claude Opus 4.6 (Thinking)',
+  'gpt-oss-120b-medium': 'GPT-OSS 120B (Medium)',
+};
+
+export function humanizeModelName(id: string): string {
+  if (parsedModelNames.has(id)) return parsedModelNames.get(id)!;
+  if (KNOWN_AGY_MODEL_NAMES[id]) return KNOWN_AGY_MODEL_NAMES[id];
+  return id;
+}
+
 /**
  * Parse `agy models` stdout into model id list.
  * Skips status lines like "Fetching available models...".
- * Takes the first whitespace-separated token per non-empty line.
+ * Takes the first whitespace-separated token per non-empty line and records display names.
  */
 export function parseAgyModelsStdout(stdout: string): string[] {
   if (!stdout || typeof stdout !== 'string') return [];
@@ -33,13 +62,17 @@ export function parseAgyModelsStdout(stdout: string): string[] {
     if (/^fetching\b/i.test(line)) continue;
     if (/^available models/i.test(line)) continue;
     if (/^id\b/i.test(line) && /\bname\b/i.test(line)) continue;
-    const id = line.split(/\s+/)[0];
+    const parts = line.split('\t');
+    const id = (parts[0] || line.split(/\s+/)[0]).trim();
     if (!id || id.startsWith('-') || id.includes('=')) continue;
     // Model ids are typically slug-like (letters, digits, dots, hyphens, underscores)
     if (!/^[A-Za-z0-9][A-Za-z0-9._:+-]*$/.test(id)) continue;
     if (seen.has(id)) continue;
     seen.add(id);
     out.push(id);
+    if (parts[1]?.trim()) {
+      parsedModelNames.set(id, parts[1].trim());
+    }
   }
   return out;
 }
@@ -181,11 +214,18 @@ function runAgySubcommand(
  * Official default Antigravity models fallback (active verified models).
  */
 export const DEFAULT_AGY_MODELS: string[] = [
+  'gemini-4-argon-medium',
+  'gemini-4-argon-high',
+  'gemini-4-argon-low',
   'gemini-3.8-flash-high',
   'gemini-3.8-flash-medium',
   'gemini-3.8-flash-low',
-  'claude-sonnet-4-6',
-  'claude-opus-4-6-thinking',
+  'claude-opus-5-5-low',
+  'claude-opus-5-5-medium',
+  'claude-opus-5-5-high',
+  'claude-sonnet-5-5-low',
+  'claude-sonnet-5-5-medium',
+  'claude-sonnet-5-5-high',
   'gpt-oss-120b-medium',
 ];
 

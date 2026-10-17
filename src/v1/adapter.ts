@@ -10,6 +10,10 @@ export class AgyAcpV1Service {
 
   async initialize(): Promise<any> {
     debugLog('V1 initialize called');
+    // Pre-warm discovery in background so session/new has cached live models ready
+    this.core.getDiscovery().catch((err) => {
+      debugLog(`Background discovery pre-warm failed: ${err}`);
+    });
     // NOTE (2026-09-22): minimal opencode-shaped response. Zed 1.20.2 closes
     // the connection on the previous full shape for unknown reasons; this
     // minimal shape is verified working in Zed (initialize -> session/new ->

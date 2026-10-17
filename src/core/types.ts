@@ -3,11 +3,12 @@ import type { AgyProcessManager } from '../lib/agy-process.ts';
 import type { MapperState } from '../lib/map-agy-to-acp.ts';
 import type { SoftDenyInfo } from '../lib/soft-deny.ts';
 import { errorLog } from '../lib/debug-log.ts';
+import { humanizeModelName } from '../lib/agy-discovery.ts';
 
 export const AGENT_INFO = {
   name: 'agy-acp',
   title: 'agy ACP (stream-json)',
-  version: '0.1.27',
+  version: '0.1.28',
 };
 
 export const BRIDGE_CAPABILITIES = {
@@ -66,7 +67,7 @@ export function catalogChoices(items: unknown, currentValue?: string): CatalogCh
 
       if (typeof item === 'string') {
         value = item.trim();
-        name = value;
+        name = humanizeModelName(value);
       } else if (item && typeof item === 'object') {
         const candidate = item as Record<string, unknown>;
         value =
@@ -75,7 +76,7 @@ export function catalogChoices(items: unknown, currentValue?: string): CatalogCh
             : typeof candidate.value === 'string'
               ? candidate.value.trim()
               : undefined;
-        name = typeof candidate.name === 'string' ? candidate.name.trim() : value;
+        name = typeof candidate.name === 'string' ? candidate.name.trim() : (value ? humanizeModelName(value) : undefined);
         description =
           typeof candidate.description === 'string' && candidate.description.trim()
             ? candidate.description.trim()
@@ -92,7 +93,7 @@ export function catalogChoices(items: unknown, currentValue?: string): CatalogCh
   if (currentValue && !seen.has(currentValue)) {
     choices.unshift({
       value: currentValue,
-      name: currentValue,
+      name: humanizeModelName(currentValue),
       description: 'Current session value',
     });
   }

@@ -44,9 +44,12 @@ research
 });
 
 describe('discoverAgyCatalog', () => {
-  test('DEFAULT_AGY_MODELS contains only active verified models', () => {
+  test('DEFAULT_AGY_MODELS contains active verified models including argon and opus 5.5', () => {
+    expect(DEFAULT_AGY_MODELS).toContain('gemini-4-argon-medium');
     expect(DEFAULT_AGY_MODELS).toContain('gemini-3.8-flash-high');
-    expect(DEFAULT_AGY_MODELS).toContain('claude-sonnet-4-6');
+    expect(DEFAULT_AGY_MODELS).toContain('claude-opus-5-5-low');
+    expect(DEFAULT_AGY_MODELS).toContain('claude-sonnet-5-5-low');
+    expect(DEFAULT_AGY_MODELS).toContain('gpt-oss-120b-medium');
     expect(DEFAULT_AGY_MODELS).not.toContain('gemini-3.7-flash-high');
     expect(DEFAULT_AGY_MODELS).not.toContain('gemini-3.6-flash-high');
     expect(DEFAULT_AGY_MODELS).not.toContain('gemini-3.1-pro-high');
